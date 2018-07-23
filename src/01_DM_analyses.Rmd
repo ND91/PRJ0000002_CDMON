@@ -1,0 +1,1046 @@
+---
+title: "Methylation Analysis Monocytes 2015"
+author: "Andrew Li Yim"
+date: "November 4, 2015"
+output: html_document
+---
+
+This script was used for analyzing the data obtained from the Illumina HumanMethylation 450k Infinium BeadChip Array. This experiment was setup in combination with the fatlose study. One of the prerequisites is that the .idat files are in pairs in the respective subfolders. This can be achieved using the shell script: idat_finder.sh
+
+Important to note is that the chunks are dependent on one another, meaning that chunks must be run in a sequential order.
+
+Preset some values and load some useful functions
+```{r Preset values, echo = FALSE}
+#Set seed
+set.seed(1)
+
+#Make folder for the files to come
+dir.create("Results")
+setwd("Results/")
+
+#methylAid_nonvisual is the non-shiny version of methylAid which automatically removes outlier samples as per the thresholds
+methylAid_nonvisual <- function(RGset, MU_threshold = 10.50, NP_threshold = 11.75, BS_threshold = 12.75, HC_threshold = 13.25, DP_threshold = 0.95){
+  #Calculate detection p-value and frequency of probe passing threshold
+  DP <- detectionP(RGset)
+  DPfreq <- colSums(DP < 0.01, na.rm=TRUE)/nrow(DP)
+  
+  #Medians of the overall methylated and unmethylated intensities
+  MU.full <- matrix(0.0, nrow = 2, ncol = ncol(RGset))
+  M.full <- getMeth(Mset.raw)
+  U.full <- getUnmeth(Mset.raw)
+  MU.full[1,] <- colMedians(M.full, na.rm = TRUE)
+  MU.full[2,] <- colMedians(U.full, na.rm = TRUE)
+  colnames(MU.full) <- colnames(RGset)
+  rownames(MU.full) <- c("Methylated", "Unmethylated")
+  
+  #Find the red and green intensities of the control probes
+  data(hm450.controls, package="FDb.InfiniumMethylation.hg19", envir=environment())
+  Red.full <- getRed(RGset)
+  Green.full <- getGreen(RGset)
+  id <- intersect(hm450.controls$Address, rownames(Red.full))
+  Red.controls <- Red.full[rownames(Red.full) %in% id,]
+  Green.controls <- Green.full[rownames(Green.full) %in% id,]
+  hm450.controls <- hm450.controls[hm450.controls$Address %in% id,]
+  hm450.controls <- hm450.controls[order(hm450.controls$Address), ]
+  
+  Red.controls.log <- log2(Red.controls)
+  Green.controls.log <- log2(Green.controls)
+  
+  hm450.controls <- hm450.controls[!(hm450.controls$Type %in% c("NORM_A", "NORM_G", "NORM_C", "NORM_T")), ]
+  control.data <- data.frame(Address=rep(rownames(Red.controls.log), ncol(Red.controls.log)), Samples=rep(colnames(Red.controls.log), each=nrow(Red.controls.log)), IntRed=as.vector(Red.controls.log),IntGrn=as.vector(Green.controls.log))
+  hm450.control.data <- merge(hm450.controls, control.data)
+  
+  #Methylated/Unmethylated
+  MU.full.log2 <- t(as.data.frame(log2(MU.full)))
+  MU.outliers <- names(which(MU.full.log2[,1] <= MU_threshold))
+  
+  #Non-Polymorphic
+  NP.control <- hm450.control.data[grepl("^NON-POLYMORPHIC$", hm450.control.data$Type),]
+  NP.green <- NP.control[NP.control$Name %in% c("NP (C)", "NP (G)"), c(1:5,7)]
+  NP.avg.green <- tapply(NP.green$IntGrn, NP.green$Samples, mean)
+  NP.outliers <- names(which(NP.avg.green <= NP_threshold))
+  
+  #Bisulfite Conversion I
+  BS.control <- hm450.control.data[grepl("^BISULFITE CONVERSION I$", hm450.control.data$Type),]
+  BS.green <- BS.control[grepl("C1|C2|C3", BS.control$Name), c(1:5,7)]
+  BS.avg.green <- tapply(BS.green$IntGrn, BS.green$Samples, mean)
+  BS.outliers <- names(which(BS.avg.green <= BS_threshold))
+  
+  #Hybridization
+  HC.control <- hm450.control.data[grepl("^HYBRIDIZATION$", hm450.control.data$Type),]
+  HC.control <- HC.control[order(HC.control$Samples),]
+  HC.green <- 0.5*(HC.control$IntGrn[grepl("High", HC.control$Name)] + HC.control$IntGrn[grepl("Low", HC.control$Name)])
+  names(HC.green) <- HC.control$Samples[grepl("High", HC.control$Name)]
+  HC.outliers <- names(which(HC.green <= HC_threshold))
+  
+  #Detection P-values
+  DP.outliers <- names(which(DPfreq <= DP_threshold))
+  
+  #Total outliers
+  total.outliers <- unique(c(MU.outliers, NP.outliers, HC.outliers, DP.outliers, BS.outliers))
+  
+  if(length(total.outliers) != 0){
+    cat("Methylated outliers are:", MU.outliers, 
+    "\nNon-polymorphic outliers are:", NP.outliers, 
+    "\nBisulfite Conversion outliers are:", BS.outliers, 
+    "\nHybridization outliers are:", HC.outliers, 
+    "\nP-value outliers are:", DP.outliers, 
+    "\n\nTotal outliers are:", total.outliers,
+    "\nSamples:")
+    print(pData(RGset)[total.outliers,])
+  
+    #Find the outliers, remove them from the samplesheet and reread them
+    indices.outliers <- which(rownames(pData(RGset)) %in% rownames(pData(RGset)[total.outliers,]))
+    targets.correct <- targets[-indices.outliers,]
+  } else{
+    targets.correct <- targets
+  }
+
+  #Return the corrected target sheet
+  return(targets.correct = targets.correct)
+}
+
+#ind_cpg_plotter produces a boxplot overlayed by a stripplot of a specific CpG
+ind_cpg_plotter <- function(cpg_num, betas, factor_interest, gg.plot = T){
+  require(ggplot2)
+  require(gridExtra)
+  
+  if(is.null(cpg_num)){
+    message("No CpG number defined")
+  } else if(is.null(betas)){
+    message("No Beta matrix provided")
+  } else if(is.null(factor_interest)){
+    message("No factor of interest provided")
+  }
+  
+  beta.df <- data.frame(beta = betas[cpg_num,], cohort = factor_interest)
+  if(gg.plot == T){
+    small_plot <- ggplot(data = beta.df, aes(x = cohort, y = beta)) + 
+      ylim(c(0,1)) + 
+      geom_boxplot(aes(fill = cohort), outlier.colour = NA) + 
+      geom_jitter(size = 3, aes(shape = cohort)) + 
+      theme_bw() + 
+      xlab("")
+    large_plot <- ggplot(data = beta.df, aes(x = cohort, y = beta)) + 
+      geom_boxplot(aes(fill = cohort), outlier.colour = NA) + 
+      geom_jitter(size = 3, aes(shape = cohort)) + 
+      theme_bw() + 
+      ggtitle("Enlarged") + 
+      theme(legend.position = "none") + 
+      xlab("")
+    grid.arrange(small_plot, large_plot, ncol = 2, top = cpg_num)
+  } else{
+    boxplot(beta~cohort, data = beta.df, main = cpg_num, ylim = c(0,1), ylab = "Beta")
+    stripchart(beta~cohort, data = beta.df, vertical = T, method = "jitter", pch = 16, add = T, col = "blue")
+  }
+}
+```
+
+We initially read in the target/pheno files and perform the associated Quality Control using methylAid
+```{r Read the files and QC, echo = FALSE}
+require(IlluminaHumanMethylation450kmanifest)
+require(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+require(MethylAid)
+require(shinyMethyl)
+
+sourceDir = '/home/ayliyim/Documents/Crohn/Monocytes_2015/data'
+targets <- read.450k.sheet(base = sourceDir, pattern = "Pheno")
+targets$Slide <- as.numeric(targets$Slide)
+
+RGset <- read.450k.exp(targets = targets)
+Mset.raw <- preprocessRaw(rgSet = RGset)
+
+#QC-check: MethylAid
+targets.correct <- methylAid_nonvisual(RGset = RGset)
+if(nrow(targets) != nrow(targets.correct)){
+  RGset.correct <- read.450k.exp(targets = targets.correct)
+  Mset.raw <- preprocessRaw(rgSet = RGset.correct)
+} else{
+  RGset.correct <- RGset
+}
+
+```
+
+We now preprocess our results using functional normalization and attach the annotation to the probes, thereby removing probes located on the sex chromosomes, those which bind to CpGs that contain SNPs and those that bind to promiscuous probes.
+```{r Preprocessing/Normalization, echo = F}
+GMset <- preprocessFunnorm(rgSet = RGset.correct)
+annotation.total <- getAnnotation(GMset)
+
+#Drop sex
+annotation.noSex <- annotation.total[-which(annotation.total$chr %in% c("chrY", "chrX")),]
+GMset.noSex <- GMset[rownames(annotation.noSex), ]
+#Drop SNP
+GMset.noSNPs <- dropLociWithSnps(GMset.noSex, snps = c("SBE","CpG"), maf = 0)
+#Drop promiscuous probes
+promProbes <- read.csv("~/Dropbox/Epimac/Data/HumanMethylation450k/Non-specific-probes-Illumina450k.csv")[,1]
+GMset.nopromProbes <- GMset.noSNPs[featureNames(GMset.noSNPs) %in% rownames(annotation.total[!rownames(annotation.total) %in% promProbes, ]), ]
+
+GMset.culled <- GMset.nopromProbes
+annotation.culled <- getAnnotation(GMset.culled)
+annotation.culled.gr <- makeGRangesFromDataFrame(annotation.culled, keep.extra.columns = T, start.field = "pos", end.field = "pos")
+```
+
+Extract the M-values and the betas for further processing
+```{r Extract M-values and Beta-values, echo = F}
+M.culled <- getM(GMset.culled)
+# For some reason functional normalization introduces 0s for unmethylated channels, which result in the M-value acquiring values of negative infinity (log2(0) == -Inf), I will throw these CpGs out.
+M.culled <- M.culled[-which(M.culled == -Inf, arr.ind = T, useNames = F)[,1],]
+Beta.culled <- getBeta(GMset.culled)
+```
+
+Edit the phenodata such that the three contrasts are annotated correctly
+```{r Factor of interest, echo = F}
+factor_interest <- gsub("-.*", "", pData(GMset.culled)$inclusionnr)
+factor_interest <- gsub("[0-9]", "", factor_interest)
+```
+
+Exploratory data analysis. 
+```{r Exploratory Data Analysis, echo = F}
+require(minfi)
+require(FlowSorted.Blood.450k)
+require(reshape)
+require(plyr)
+require(RColorBrewer)
+require(rafalib)
+require(ggplot2)
+
+dir.create("All_samples")
+setwd("All_samples/")
+dir.create("EDA")
+setwd("EDA/")
+
+######################
+# Correlation matrix #
+######################
+M.cor <- cor(M.culled)
+cols <- colorRampPalette(rev(brewer.pal(11,"RdYlBu")))(100)
+
+svg(filename = "Correlation_matrix.svg")
+image(1:ncol(M.culled), 1:ncol(M.culled), M.cor, col = cols, main = "Correlation Matrix", xaxt = "n", xlab = "", yaxt = "n", ylab = "")
+# axis(2, 1:ncol(M.culled), as.numeric(as.factor(pData(GMset)$Cohort)), las = 2)
+# axis(1, 1:ncol(M.culled), as.numeric(as.factor(pData(GMset)$Cohort)), las = 2)
+axis(2, 1:ncol(M.culled), pData(GMset)$inclusionnr, las = 2)
+axis(1, 1:ncol(M.culled), pData(GMset)$inclusionnr, las = 2)
+dev.off()
+
+###########################
+# Hierarchical Clustering #
+###########################
+mypar(1,1)
+dist.M.culled <- dist(t(M.culled))
+hc.M.culled <- hclust(dist.M.culled)
+
+svg(filename = "Hierarchical_Clustering.svg")
+myplclust(hc.M.culled, labels = pData(GMset)$inclusionnr, lab.col = as.fumeric(factor_interest))
+legend("topright", legend = unique(factor_interest), pch = 16, col = as.fumeric(unique(factor_interest)))
+dev.off()
+
+###########
+# MDS/PCA #
+###########
+M.culled.centered <- M.culled-rowMeans(M.culled)
+M.svd <- svd(M.culled.centered)
+
+#Plot PC1 and PC2
+cols <- as.fumeric(factor_interest)
+pchs <- as.numeric(round(pData(GMset.culled)$AGE/10))*2
+
+mypar(1,1)
+svg(filename = "PC1_PC2.svg")
+plot(M.svd$v[,1], M.svd$v[,2], col = cols, pch = pchs, xlab = "PC1", ylab = "PC2")
+legend.labels <- c(levels(as.factor(factor_interest)), paste0("Age: ~",sort(unique(pchs/2))*10))
+legend.pchs <- c(rep(16, length(unique(cols))), sort(unique(pchs)))
+legend.cols <- c(unique(cols), rep("black", length(unique(pchs))))
+legend("topleft", legend = legend.labels, pch = legend.pchs, col = legend.cols)
+dev.off()
+
+#Order the samples based on PC1 to see who are the outliers
+pData(GMset.culled)[order(M.svd$v[,1]),]
+
+#Plot variance per PC
+#What we expect to see if no batch effects were present
+y0 <- matrix(rnorm(nrow(M.culled)*ncol(M.culled)), nrow(M.culled), ncol(M.culled))
+d0 <- svd(y0)$d
+LIM <- range(c(d0^2/sum(d0^2), M.svd$d^2/sum(M.svd$d^2)))
+
+svg(filename = "Variance_per_PC.svg")
+plot(d0^2/sum(d0^2), ylab = "Variance Explained", xlab = "Principal Component", pch = 16, ylim = LIM)
+#What we actually see
+points(M.svd$d^2/sum(M.svd$d^2), ylab = "Variance Explained", xlab = "Principal Component", pch = 16, col = "red")
+legend("topright", c("Monocytes2015", "Randomized_Monocytes2015"), col = c("red", "black"), pch = 16)
+dev.off()
+
+###########################
+# Blood cell distribution #
+###########################
+cellCounts <- estimateCellCounts(rgSet = RGset.correct, compositeCellType = "Blood", cellTypes = c("CD8T","CD4T", "NK","Bcell","Mono","Gran"), verbose = T, returnAll = F, meanPlot = T)
+#Plot the blood cell distribution
+#CC.df <- data.frame(names = rownames(cellCounts), cohort = factor_interest, cellCounts)
+CC.df <- data.frame(cohort = factor_interest, cellCounts)
+CC.df.melted <- melt(CC.df, id.vars = "cohort")
+
+#Barplot
+#CC.means <- ddply(CC.df.melted, c("cohort", "variable"), summarise,mean=mean(value))
+#CC.means.barplot <- qplot(x=cohort, y=mean, fill=variable, data=CC.means, geom="bar", stat="identity", position="dodge") + theme_bw()
+
+#Box-stripplot
+p <- ggplot(data = CC.df.melted, aes(x = cohort, y = value, ymax = max(value)*1.05))
+p <- p + geom_boxplot(aes(fill = variable), outlier.colour = NA)
+p <- p + geom_point(aes(y = value, group = variable), position = position_dodge(width = 0.75))
+p <- p + theme_bw()
+p <- p + facet_wrap(~cohort, scales = "free")
+p <- p + xlab("Cohort") + ylab("Ratio")
+p <- p + guides(fill = guide_legend(title = "Blood cell group"))
+
+svg(filename = "Bloodcell_estimation.svg")
+p
+dev.off()
+```
+Note that in the correlation matrix all samples are highly correlated to one another with the exception of HC1 and up to some extent HC6. Additionally, we also see that CDACT-1a and CDACT-1b are display the strongest correlations, which is understandable since they are technical replicates from one another. The results show that we have a few outliers in the MDS-plot on PC1, which we find back in the hierarchical clustering. Srangely, the outliers are located in the controls (HC1 and HC6). To compensate for this, I will compare the results obtained when I keep HC1 and remove HC1 from the sample. 
+  Aside from said outliers, no clear clustering exists for the different groups at face value, forshading similar results to the methylation analysis of the Whole Blood 2013 cohort. On a more positive note, the blood cell distribution indicates that most of the cells appear to be monocytes. However, we do see that the controls display minor populations of CD8T, CD4T, NK and B-cells and no granulocytes, while the CDACT and CDREM display the opposite. 
+
+Seeing that CDACT-1a and CDACT-1b are technically technobiological replicates from one another (They are obtained from the same blood sample (technical), but "could" represent different subtypes (biological)), I sought to establish whether they were very different from one another, justifying their inclusion in the analysis; if they are the same however, they ought to be excluded. In the hierarchical clustering and correlation plot it is quite evident that they belong to the same cluster. In the next chunk I aim to see whether they are comprised of different celltypes. If they are the same, I would want to throw one out as it would be a technical duplicate meaning that the samples are paired, thereby biasing the results.
+```{r CDACT-1a and CDACT-1b, echo = F}
+cdact1 <- cellCounts[grep("CDACT-1", pData(GMset.culled)$inclusionnr),]
+cdact1.melt <- melt(cdact1)
+
+colnames(cdact1.melt) <- c("cdact1", "cell", "value")
+
+cdact1.melt$cdact1 <- gsub("3998590053_R03C01", "CDACT1a", cdact1.melt$cdact1)
+cdact1.melt$cdact1 <- gsub("3998920093_R06C02", "CDACT1b", cdact1.melt$cdact1)
+
+#Barplot
+cdact1.barplot <- qplot(x=cdact1, y=value, fill=cell, data=cdact1.melt, geom="bar", stat="identity", position="dodge") + theme_bw()
+svg(filename = "CDACT1_Bloodcell_estimation.svg")
+cdact1.barplot
+dev.off()
+```
+In line with what we observed previously for the hierarchical clustering and PCA, we see that the blood cell distribution of CDACT1a and CDACT1b are similar. To this end, I think we will need to remove one from the data. Seeing that both are quality-wise good, I will remove CDACT-1b. 
+
+##################################
+# All samples (Removed CDACT-1b) #
+##################################
+
+We initially compare CD vs HC correcting for age and unwanted variables using both RUVfit and SVA. 
+```{r CD vs HC, echo = F}
+require(limma)
+
+setwd("..")
+dir.create("Results")
+setwd("Results")
+
+#Remove CDACT-1b
+GMset.culled <- GMset.culled[,-which(pData(GMset.culled)$inclusionnr == "CDACT-1b")]
+M.culled <- getM(GMset.culled)
+M.culled <- M.culled[-which(M.culled == -Inf, arr.ind = T, useNames = F)[,1],]
+Beta.culled <- getBeta(GMset.culled)
+
+#Generate factors
+factor_interest <- gsub("-.*", "", pData(GMset.culled)$inclusionnr)
+factor_interest <- gsub("[0-9]", "", factor_interest)
+factor_interest.bin <- factor(gsub("(CDACT|CDREM)", "Crohn", factor_interest))
+design.bin <- model.matrix(~relevel(factor_interest.bin, "HC") + pData(GMset.culled)$AGE)
+colnames(design.bin) <- c("(Intercept)", "Crohn", "Age")
+
+##################
+# Age correction #
+##################
+fit.bin <- lmFit(object = M.culled, design = design.bin)
+fit.bin.eb <- eBayes(fit.bin)
+top.bin <- topTable(fit = fit.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
+top.bin <- cbind(top.bin, annotation.total[rownames(top.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(top.bin, "CD_HC_Age.csv")
+#ind_cpg_plotter(cpg_num = rownames(top.bin)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#Check the P-value distribution
+require(rafalib)
+mypar(1,2)
+#Histogram
+hist(fit.bin.eb$p.value[,2], breaks = 1000, main = "P-value Distribution", xlab = "P-value")
+#QQ plot
+qqnorm(fit.bin.eb$p.value[,2], pch = 16)
+qqline(fit.bin.eb$p.value[,2])
+
+#Volcano plot
+mypar(1,1)
+volplot <- data.frame(Coef = fit.bin.eb$coefficients[,2], Padj = top.bin[rownames(fit.bin.eb),]$adj.P.Val)
+x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
+abline(h = -log10(0.05), lty = 1)
+
+###########################
+# Age correction + RUVfit #
+###########################
+require(missMethyl)
+
+#negcons.3 <- !(rownames(top.3) %in% rownames(top.3[nrow(top.3)-1000:nrow(top.3), ]))
+negcons.bin <- rownames(M.culled) %in% rownames(top.bin[which(top.bin$adj.P.Val > 0.5),])
+ruv.fit.bin <- RUVfit(data = M.culled, design = design.bin, coef = 2, ctl = negcons.bin)
+ruv.fit.bin.adj <- RUVadj(ruv.fit.bin)
+ruv.top.bin <- topRUV(ruv.fit.bin.adj, number = Inf)
+ruv.top.bin <- cbind(ruv.top.bin, annotation.total[rownames(ruv.top.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(ruv.top.bin, "CD_HC_Age_RUV.csv")
+
+#Check the P-value distribution
+require(rafalib)
+mypar(1,2)
+#Histogram
+hist(ruv.fit.bin.adj$p, breaks = 1000, main = "P-value Distribution", xlab = "P-value")
+#QQ plot
+qqnorm(ruv.fit.bin.adj$p, pch = 16)
+qqline(ruv.fit.bin.adj$p)
+#Volcano plot of adjusted (moderated) P-values
+mypar(1,1)
+volplot <- data.frame(Coef = ruv.top.bin$V1, Padj = ruv.top.bin$p.ebayes.BH)
+x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
+abline(h = -log10(0.05), lty = 1)
+
+########################
+# Age correction + SVA #
+########################
+require(sva)
+
+sva.fit.bin <- sva(M.culled, design.bin)
+sva.design.bin <- cbind(design.bin, sva.fit.bin$sv)
+colnames(sva.design.bin) <- c("(Intercept)", "Crohn", "Age", "1", "2", "3")
+  
+sva.fit2.bin <- lmFit(M.culled, sva.design.bin)
+sva.fit2.eb.bin <- eBayes(sva.fit2.bin)
+sva.top.bin <- topTable(fit = sva.fit2.eb.bin, coef = 2, number = Inf, adjust.method = "BH")
+sva.top.bin <- cbind(sva.top.bin, annotation.total[rownames(sva.top.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(sva.top.bin, "CD_HC_Age_SVA.csv")
+
+#Check the P-value distribution
+require(rafalib)
+mypar(1,2)
+#Histogram
+hist(sva.fit2.eb.bin$p.value[,2], breaks = 1000, main = "P-value Distribution", xlab = "P-value")
+#QQ plot
+qqnorm(sva.fit2.eb.bin$p.value[,2], pch = 16)
+qqline(sva.fit2.eb.bin$p.value[,2])
+#Volcano plot of adjusted (moderated) P-values
+mypar(1,1)
+volplot <- data.frame(Coef = sva.fit2.eb.bin$coefficients[,2], Padj = sva.top.bin[rownames(sva.fit2.eb.bin),]$adj.P.Val)
+x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
+abline(h = -log10(0.05), lty = 1)
+
+##############
+# cg11267810 #
+##############
+
+ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest.bin)
+cg11267810 <- Beta.culled["cg11267810",]
+names(cg11267810) <- pData(GMset.culled)$inclusionnr
+
+```
+Similarly to before, only SVA produces a significant hit, namely cg11267810. Analysis of cg11267810.. Comparison of the P-value distributions shows that in general the P-values are generally normally distributed (barring the tails). Further comparisons of the coefficients (the effect sizes) shows that the RUV correction is more correlated to the non-corrected coefficients as opposed to the SVA correction (0.8885422 versus 0.6400698 Pearson correlation)
+
+```{r CD vs HC: Batch correction, echo = F}
+mypar(1,3)
+#Age alone
+qqnorm(fit.bin.eb$p.value[,2], pch = 16, main = "Age", col = "black")
+qqline(fit.bin.eb$p.value[,2])
+#Age + RUV
+qqnorm(ruv.fit.bin.adj$p, pch = 16, main = "Age + RUVfit", col = "red")
+qqline(ruv.fit.bin.adj$p)
+#Age + SVA
+qqnorm(sva.fit2.eb.bin$p.value[,2], pch = 16, main = "Age + SVA", col = "blue")
+qqline(sva.fit2.eb.bin$p.value[,2])
+
+mypar(1,1)
+#Age vs Age+SVA
+plot(x = fit.bin.eb$coef[,2], y = sva.fit2.eb.bin$coef[names(fit.bin.eb$coef[,2]),2], xlab = "Meth~Age", ylab = "Meth~Age+SVA", main = "Effect size (M)")
+cor(x = sort(fit.bin.eb$coef[,2]), y = sva.fit2.eb.bin$coef[names(sort(fit.bin.eb$coef[,2])),2])
+#Age vs Age+RUV
+plot(x = fit.bin.eb$coef[,2], y = ruv.fit.bin.adj$coef[names(fit.bin.eb$coef[,2]),], xlab = "Meth~Age", ylab = "Meth~Age+RUV", main = "Effect size (M)")
+cor(x = sort(fit.bin.eb$coef[,2]), y = ruv.fit.bin.adj$coef[names(sort(fit.bin.eb$coef[,2])),])
+
+```
+Only the SVA correction yielded (15) significant hits (P.BH < 0.05) with RUV-correction yielding almost-significant hits). Analysis of these significant hits in the Age-corrected and Age+RUV-corrected top hits shows that they differ and that perhaps the outlier controls, as observed in EDA, are causing such CpGs to appear significant. Of note is that there appear to be some outliers in the CDACTs and CDREMs, which give the latter a somewhat "HC-like" beta-pattern. 
+
+Here we aim to establish whether the 15 significant DMPs are actually located in enriched pathways
+```{r CD vs HC: SVA-hits, echo = F}
+sva.sig <- sva.top.bin[which(sva.top.bin$adj.P.Val < 0.05),]
+
+#GO
+require(BiasedUrn)
+require(missMethyl)
+require(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+go.sva <- gometh(sig.cpg = rownames(sva.top.bin[which(sva.top.bin$adj.P.Val < 0.05),]), all.cpg = rownames(annotation.culled), plot.bias = T, prior.prob = T)
+go.sva.sig <- go.sva[go.sva$FDR < 0.05,]
+```
+GO-enrichment yields no significant hits, which is to be expected seeing that we have only 17 significant hits. 
+
+####################################################################################################################################################
+# The following chunk is not very relevant due to the presence of the outlier control samples, I will leave the chunk in here for future reference #
+####################################################################################################################################################
+
+In the following chunk we build the linear model correcting only for age where we compare the contrasts with one another. 
+```{r CDACT vs CDREM vs HC, echo = F}
+require(limma)
+
+##################
+# Age correction #
+##################
+design <- model.matrix(~0 + factor_interest + pData(GMset.culled)$AGE)
+colnames(design) <- c("CDACT", "CDREM", "HC", "Age")
+fit <- lmFit(M.culled, design)
+
+contrastmat <- makeContrasts(CDREM-CDACT, 
+                             CDREM-HC, 
+                             CDACT-HC, 
+                             levels = design)
+
+fit.cont <- contrasts.fit(fit, contrastmat)
+fit.cont.eb <- eBayes(fit.cont) 
+
+#CDREM relative to CDACT
+top.CDREM_CDACT <- topTable(fit.cont.eb, coef = 1, num = Inf, adjust.method = "BH")
+top.CDREM_CDACT <- cbind(top.CDREM_CDACT, annotation.total[rownames(top.CDREM_CDACT),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+ind_cpg_plotter(cpg_num = rownames(top.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#CDREM relative to HC
+top.CDREM_HC <- topTable(fit.cont.eb, coef = 2, num = Inf, adjust.method = "BH")
+top.CDREM_HC <- cbind(top.CDREM_HC, annotation.total[rownames(top.CDREM_HC),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+ind_cpg_plotter(cpg_num = rownames(top.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#CDACT relative to HC
+top.CDACT_HC <- topTable(fit.cont.eb, coef = 3, num = Inf, adjust.method = "BH")
+top.CDACT_HC <- cbind(top.CDACT_HC, annotation.total[rownames(top.CDACT_HC),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+ind_cpg_plotter(cpg_num = rownames(top.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+########################
+# Age correction + SVA #
+########################
+require(sva)
+sva.fit <- sva(M.culled, design)
+sva.design <- cbind(design, sva.fit$sv)
+colnames(sva.design) <- c("CDACT", "CDREM", "HC", "Age", "B1", "B2", "B3")
+sva.fit2 <- lmFit(M.culled, sva.design)
+
+contrastmat.sva <- makeContrasts(CDREM-CDACT, 
+                                 CDREM-HC, 
+                                 CDACT-HC, 
+                                 levels = sva.design)
+sva.fit2.cont <- contrasts.fit(sva.fit2, contrastmat.sva)
+sva.fit2.eb <- eBayes(sva.fit2.cont)
+
+#CDREM relative to CDACT
+sva.top.CDREM_CDACT <- topTable(fit = sva.fit2.eb, coef = 1, number = Inf, adjust.method = "BH")
+sva.top.CDREM_CDACT <- cbind(sva.top.CDREM_CDACT, annotation.total[rownames(sva.top.CDREM_CDACT), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+#ind_cpg_plotter(cpg_num = rownames(sva.top.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#CDREM relative to HC
+sva.top.CDREM_HC <- topTable(fit = sva.fit2.eb, coef = 2, number = Inf, adjust.method = "BH")
+sva.top.CDREM_HC <- cbind(sva.top.CDREM_HC, annotation.total[rownames(sva.top.CDREM_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+#ind_cpg_plotter(cpg_num = rownames(sva.top.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#CDACT relative to HC
+sva.top.CDACT_HC <- topTable(fit = sva.fit2.eb, coef = 3, number = Inf, adjust.method = "BH")
+sva.top.CDACT_HC <- cbind(sva.top.CDACT_HC, annotation.total[rownames(sva.top.CDACT_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+#ind_cpg_plotter(cpg_num = rownames(sva.top.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#cg08534055
+ind_cpg_plotter(cpg_num = "cg08534055", betas = Beta.culled, factor_interest = factor_interest)
+ind_cpg_plotter(cpg_num = "cg08534055", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+
+```
+We find that no CpGs when comparing CDACT vs CDREM, CDREM vs HC or CDACT vs HC that are significant after BH-correction. When we look at the specific comparisons, there appear to be some differences, but they are probably not significant. Additionally, the effect size is very limited with the top CpG of CDACT-HC having an effect size of ~0.02. When comparing CDACT to HC, we find that cg08534055 (C16orf72) also ends up in the top 10. Visualization of the probe shows that 
+
+##############
+# Remove HC1 #
+##############
+
+As we had experienced that HC1 is an outlier in PC1, we have sought to remove it from the following analyses
+```{r Remove HC1, echo = F}
+
+setwd("../..")
+dir.create("HC1_out")
+setwd("HC1_out/")
+
+#Remove HC1
+GMset.rmout <- GMset.culled[,-which(pData(GMset.culled)$inclusionnr == "HC1")]
+Beta.rmout <- getBeta(GMset.rmout)
+M.rmout <- getM(GMset.rmout)
+
+factor_interest.rmout <- factor_interest[-out.index]
+factor_interest.bin.rmout <- factor_interest.bin[-out.index]
+```
+
+Here we perform some quality checks to see whether what the PCA/MDS looks like post-removal of the outlier
+```{r HC1-out: QC, echo = F}
+
+dir.create("EDA")
+setwd("EDA/")
+
+###########################
+# Hierarchical Clustering #
+###########################
+dist.M.rmout <- dist(t(M.rmout))
+hc.M.rmout <- hclust(dist.M.rmout)
+svg(filename = "Hierarchical_Clustering.svg")
+myplclust(hc.M.rmout, labels = pData(GMset.rmout)$inclusionnr, lab.col = as.fumeric(factor_interest.rmout))
+legend("topright", legend = unique(factor_interest.rmout), pch = 16, col = as.fumeric(unique(factor_interest.rmout)))
+dev.off()
+
+###########
+# MDS/PCA #
+###########
+M.rmout.centered <- M.rmout-rowMeans(M.rmout)
+M.rmout.svd <- svd(M.rmout.centered)
+
+#Plot PC1 and PC2
+cols <- as.fumeric(factor_interest.rmout)
+pchs <- as.numeric(round(pData(GMset.rmout)$AGE/10))*2
+
+mypar(1,1)
+svg(filename = "PC1_PC2.svg")
+plot(M.rmout.svd$v[,1], M.rmout.svd$v[,2], col = cols, pch = pchs, xlab = "PC1", ylab = "PC2")
+legend.labels <- c(levels(as.factor(factor_interest.rmout)), paste0("Age: ~",sort(unique(pchs/2))*10))
+legend.pchs <- c(rep(16, length(unique(cols))), sort(unique(pchs)))
+legend.cols <- c(unique(cols), rep("black", length(unique(pchs))))
+legend("topright", legend = legend.labels, pch = legend.pchs, col = legend.cols)
+dev.off()
+
+#CDREM outlier
+pData(GMset.rmout)[which(M.rmout.svd$v[,2] == max(M.rmout.svd$v[,2])),]
+```
+From the PCA plot we can see that HC6 is still an outlier on PC1, interestingly, CDACT1b appears to distance itself in PC2 as well. Side-thought: Perhaps I might have to rerun the script removing HC6 as well. 
+
+Once again, we compare CD versus HC without making a distinction between CDREM and CDACT
+```{r HC1-out: CD vs HC, echo = F}
+
+setwd("..")
+dir.create("Results")
+setwd("Results/")
+
+design.rmout.bin <- model.matrix(~relevel(factor_interest.bin.rmout, "HC") + pData(GMset.rmout)$AGE)
+colnames(design.rmout.bin) <- c("(Intercept)", "CrohnHC", "Age")
+
+##################
+# Age correction #
+##################
+fit.rmout.bin <- lmFit(object = M.rmout, design = design.rmout.bin)
+fit.rmout.bin.eb <- eBayes(fit.rmout.bin)
+top.rmout.bin <- topTable(fit = fit.rmout.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
+top.rmout.bin <- cbind(top.rmout.bin, annotation.total[rownames(top.rmout.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(top.rmout.bin, "CD_HC_Age.csv")
+#ind_cpg_plotter(cpg_num = rownames(top.rmout.bin)[1], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+
+#Check the P-value distribution
+require(rafalib)
+mypar(1,2)
+#Histogram
+hist(fit.rmout.bin.eb$p.value[,2], breaks = 1000, main = "P-value Distribution", xlab = "P-value")
+#QQ plot
+qqnorm(fit.rmout.bin.eb$p.value[,2], pch = 16)
+qqline(fit.rmout.bin.eb$p.value[,2])
+#Volcano plot
+mypar(1,1)
+volplot <- data.frame(Coef = fit.rmout.bin.eb$coefficients[,2], Padj = top.rmout.bin[rownames(fit.rmout.bin.eb),]$adj.P.Val)
+x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
+abline(h = -log10(0.05), lty = 1)
+
+###########################
+# Age correction + RUVfit #
+###########################
+require(missMethyl)
+
+#negcons.3 <- !(rownames(top.3) %in% rownames(top.3[nrow(top.3)-1000:nrow(top.3), ]))
+negcons.rmout.bin <- rownames(M.rmout) %in% rownames(top.rmout.bin[which(top.rmout.bin$adj.P.Val > 0.5),])
+ruv.fit.rmout.bin <- RUVfit(data = M.rmout, design = design.rmout.bin, coef = 2, ctl = negcons.rmout.bin)
+ruv.fit.rmout.bin.adj <- RUVadj(ruv.fit.rmout.bin)
+ruv.top.rmout.bin <- topRUV(ruv.fit.rmout.bin.adj, number = Inf)
+ruv.top.rmout.bin <- cbind(ruv.top.rmout.bin, annotation.total[rownames(ruv.top.rmout.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(ruv.top.rmout.bin, "CD_HC_Age_RUV.csv")
+
+#Check the P-value distribution
+require(rafalib)
+mypar(1,2)
+#Histogram
+hist(ruv.fit.rmout.bin.adj$p, breaks = 1000, main = "P-value Distribution", xlab = "P-value")
+#QQ plot
+qqnorm(ruv.fit.rmout.bin.adj$p, pch = 16)
+qqline(ruv.fit.rmout.bin.adj$p)
+#Volcano plot of adjusted (moderated) P-values
+mypar(1,1)
+#No idea why the coefficients column was not generated
+#volplot <- data.frame(Coef = ruv.top.rmout.bin$coefficients, Padj = ruv.top.rmout.bin$p.ebayes.BH)
+volplot <- data.frame(Coef = ruv.top.rmout.bin[,1], Padj = ruv.top.rmout.bin$p.ebayes.BH)
+x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
+abline(h = -log10(0.05), lty = 1)
+
+########################
+# Age correction + SVA #
+########################
+require(sva)
+
+sva.fit.rmout.bin <- sva(M.rmout, design.rmout.bin)
+sva.design.rmout.bin <- cbind(design.rmout.bin, sva.fit.rmout.bin$sv)
+
+sva.fit2.rmout.bin <- lmFit(M.rmout, sva.design.rmout.bin)
+sva.fit2.rmout.bin.eb <- eBayes(sva.fit2.rmout.bin)
+sva.top.rmout.bin <- topTable(fit = sva.fit2.rmout.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
+sva.top.rmout.bin <- cbind(sva.top.rmout.bin, annotation.total[rownames(sva.top.rmout.bin), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(sva.top.rmout.bin, "CD_HC_Age_SVA.csv")
+
+#Check the P-value distribution
+require(rafalib)
+mypar(1,2)
+#Histogram
+hist(sva.fit2.rmout.bin.eb$p.value[,2], breaks = 1000, main = "P-value Distribution", xlab = "P-value")
+#QQ plot
+qqnorm(sva.fit2.rmout.bin.eb$p.value[,2], pch = 16)
+qqline(sva.fit2.rmout.bin.eb$p.value[,2])
+#Volcano plot of adjusted (moderated) P-values
+mypar(1,1)
+volplot <- data.frame(Coef = sva.fit2.rmout.bin.eb$coefficients[,2], Padj = sva.top.rmout.bin[rownames(sva.fit2.rmout.bin.eb),]$adj.P.Val)
+x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
+abline(h = -log10(0.05), lty = 1)
+```
+Similar as when HC1 was left in, only SVA generates a significant hit, namely cg11267810. Plotting the CpG cg11267810 shows an interesting DMP, which is unfortunately still not significant at \alpha = 0.05. While the effect size is decent-ish (beta ~ 0.10), there appears to be some overlap between CD and HC, where the two lowest methylated CpGs CD fall within the distribution of the HCs. Similarly, the highest methylated HC falls overlaps with the median of CD. The unequal sampling of CD (17) versus HC (7) does not help either. 
+
+```{r HC1-out: CD vs HC SVA, echo = F}
+#All significant CpGs
+sva.sig.rmout <- sva.top.rmout.bin[which(sva.top.rmout.bin$adj.P.Val < 0.05),]
+dir.create("CD_HC_SVA")
+write.csv(sva.sig.rmout, file = paste0(getwd(), "/CD_HC_SVA/HC1_out_HC_vs_CD_SVA.csv"))
+for(i in 1:nrow(sva.sig.rmout)){
+  svg(filename = paste0(getwd(), "/CD_HC_SVA/", rownames(sva.sig.rmout)[i]))
+  ind_cpg_plotter(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+  #ind_cpg_plotter(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+  dev.off()
+}
+```
+
+One hit that was significant in the SVA analysis of the all samples and is still significant when removing HC1 is cg11267810. Interestingly, this CpG has not been associated to any gene. Another hit that was interesting was cg11664417, but two outliers in CD and HC confounds the data. 
+```{r DMP: cg11267810, echo = F}
+ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+annotation.total["cg11267810",]
+
+ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+annotation.total["cg11664417",]
+```
+Stratifying the plots based on active or remissive CD, reveals that the outliers found in CD are located in CDACT and CDREM. The plots show that the CpG indeed appears to be differential in HC versus CD (both CDACT and CDREM).
+
+#############
+# Contrasts #
+#############
+
+In the following chunk we built the linear model correcting only for age where we compare the contrasts with one another. Here we simply aim to test whether there is a difference between CDACT (a CD patient during an episode) versus CDREM (a CD patient during with no flare). Of note is that we can explicitly correct for aTNF, but we have to be cautious in building an interaction model. Additionally, SVA should in theory correct for effects caused by aTNF usage if it truly manifests itself strongly. This would be more evident when comparing CD vs HC, as our CDREM samples are enriched in aTNF users versus CDACT, which might lead to some strange conclusions (see discussion above chunk "CDACT vs CDREM with aTNF"). 
+```{r HC1-out: CDREM vs CDACT + CDREM vs HC + CDACT vs HC, echo = F}
+require(limma)
+
+##################
+# Age correction #
+##################
+design.rmout <- model.matrix(~0 + factor_interest.rmout + pData(GMset.rmout)$AGE)
+colnames(design.rmout) <- c("CDACT", "CDREM", "HC", "Age")
+fit.rmout <- lmFit(M.rmout, design.rmout)
+
+contrastmat.rmout <- makeContrasts(CDREM-CDACT, 
+                                   CDREM-HC, 
+                                   CDACT-HC, 
+                                   levels = design.rmout)
+
+fit.rmout.cont <- contrasts.fit(fit.rmout, contrastmat.rmout)
+fit.rmout.cont.eb <- eBayes(fit.rmout.cont) 
+
+#CDREM relative to CDACT
+top.rmout.CDREM_CDACT <- topTable(fit.rmout.cont.eb, coef = 1, num = Inf, adjust.method = "BH")
+top.rmout.CDREM_CDACT <- cbind(top.rmout.CDREM_CDACT, annotation.total[rownames(top.rmout.CDREM_CDACT), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+#ind_cpg_plotter(cpg_num = rownames(top.rmout.CDREM_CDACT)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+write.csv(top.rmout.CDREM_CDACT, "CDREM_CDACT_Age.csv")
+
+#CDREM relative to HC
+top.rmout.CDREM_HC <- topTable(fit.rmout.cont.eb, coef = 2, num = Inf, adjust.method = "BH")
+top.rmout.CDREM_HC <- cbind(top.rmout.CDREM_HC, annotation.total[rownames(top.rmout.CDREM_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+#ind_cpg_plotter(cpg_num = rownames(top.rmout.CDREM_HC)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+write.csv(top.rmout.CDREM_HC, "CDREM_HC_Age.csv")
+
+#CDACT relative to HC
+top.rmout.CDACT_HC <- topTable(fit.rmout.cont.eb, coef = 3, num = Inf, adjust.method = "BH")
+top.rmout.CDACT_HC <- cbind(top.rmout.CDACT_HC, annotation.total[rownames(top.rmout.CDACT_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+#ind_cpg_plotter(cpg_num = rownames(top.rmout.CDACT_HC)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+write.csv(top.rmout.CDACT_HC, "CDACT_HC_Age.csv")
+
+########################
+# Age correction + SVA #
+########################
+require(sva)
+sva.rmout.fit <- sva(M.rmout, design.rmout)
+sva.design.rmout <- cbind(design.rmout, sva.rmout.fit$sv)
+colnames(sva.design.rmout) <- c("CDACT", "CDREM", "HC", "Age", "B1", "B2", "B3", "B4", "B5", "B6")
+sva.rmout.fit2 <- lmFit(M.rmout, sva.design.rmout)
+
+contrastmat.rmout.sva <- makeContrasts(CDREM-CDACT, 
+                                       CDREM-HC, 
+                                       CDACT-HC, 
+                                       levels = sva.design.rmout)
+sva.rmout.cont <- contrasts.fit(sva.rmout.fit2, contrastmat.rmout.sva)
+sva.rmout.eb <- eBayes(sva.rmout.cont)
+
+#CDREM relative to CDACT
+sva.rmout.CDREM_CDACT <- topTable(fit = sva.rmout.eb, coef = 1, number = Inf, adjust.method = "BH")
+sva.rmout.CDREM_CDACT <- cbind(sva.rmout.CDREM_CDACT, annotation.total[rownames(sva.rmout.CDREM_CDACT), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(sva.rmout.CDREM_CDACT, "CDREM_CDACT_Age_SVA.csv")
+#ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#CDREM relative to HC
+sva.rmout.CDREM_HC <- topTable(fit = sva.rmout.eb, coef = 2, number = Inf, adjust.method = "BH")
+sva.rmout.CDREM_HC <- cbind(sva.rmout.CDREM_HC, annotation.total[rownames(sva.rmout.CDREM_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(sva.rmout.CDREM_CDACT, "CDREM_HC_Age_SVA.csv")
+#ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+#CDACT relative to HC
+sva.rmout.CDACT_HC <- topTable(fit = sva.rmout.eb, coef = 3, number = Inf, adjust.method = "BH")
+sva.rmout.CDACT_HC <- cbind(sva.rmout.CDACT_HC, annotation.total[rownames(sva.rmout.CDACT_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(sva.rmout.CDREM_CDACT, "CDACT_HC_Age_SVA.csv")
+#ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+
+```
+Having a look at the non-SVA corrected contrast contrasts, CDACT vs HC yields cg17206772 as a putative candidate (note: it's BH-adjusted P-value was lower than 0.10, which is in contrast to the other contrasts that yield nothing), with the effect size (Beta) being approximately 0.10. No gene has been associated to cg17206772 and the UCSC Genome Browser yields no results with regard to other epigenomic markers (i.e. DNase clusters, ChIP or H3K27Ac). Aside from this single CpG, none of the other contrasts yield any significant hits (not even after SVA correction).
+
+```{r cg17206772, echo = F}
+ind_cpg_plotter(cpg_num = "cg17206772", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+
+```
+
+Can we find any overlap within the top10 significant DMPs between CDACTvHC, CDREMvHC
+```{r top10 significant DMPs CDACTvCDREM, CDREMvHC}
+sva.rmout.CDACT_HC[which(rownames(sva.rmout.CDACT_HC[1:10,]) %in% rownames(sva.rmout.CDREM_HC[1:10,])),]
+ind_cpg_plotter(cpg_num = "cg16921727", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+
+```
+
+
+#####################
+# Hypothesis-driven #
+#####################
+
+Here we aim to find how well the data from other studies correspond to our data by extracting the CpGs from previous EWAS data and comparing them within our own dataset. Seeing that McDermott et al. 2015 used PBMCs (and their significant hits are very clearly explained), we will use their data to compare. Since the tables mention only the top 10 for CD vs HC, UC vs HC and IBDACT vs IBDREM, we will stratify the data accordingly.
+For CD vs HC, CpG cg10154880 contains a SNP (rs115849747) with a CpG-Maf of 0.01086 (see manifest). We threw out that probe and have therefore not taken it into our analysis. To correct for multiple testing, we assemble all our hypotheses in one data frame and simply correct for that in one go using Benjamini-Hochberg's method.
+```{r Hypothesis-driven McDermott 2015, echo = F}
+
+setwd("..")
+dir.create("Hyp_driv")
+setwd("Hyp_driv")
+
+hypdriv <- read.csv("~/Documents/Crohn/Monocytes_2015/Target_Genes_McDermott2015.csv")
+
+CDvHC <- hypdriv$IDENTIFIER[which(hypdriv$PHENO == "CD" & hypdriv$CONTROL == "Healthy")]
+CDvHC <- CDvHC[-which(CDvHC == "cg10154880")] #Remove SNP
+UCvHC <- hypdriv$IDENTIFIER[which(hypdriv$PHENO == "UC" & hypdriv$CONTROL == "Healthy")]
+IBDACTvIBDREM <- hypdriv$IDENTIFIER[which(hypdriv$PHENO == "IBDACT" & hypdriv$CONTROL == "IBDREM")]
+
+#CD + UC vs HC (IBD)
+IBDvHC.hypdriv <- unique(sva.top.rmout.bin[c(CDvHC, UCvHC),])
+IBDACTcIBDREM.hypdriv <- sva.rmout.CDACT_HC[IBDACTvIBDREM,]
+
+hypdriv.df <- rbind(IBDvHC.hypdriv, IBDACTcIBDREM.hypdriv)
+hypdriv.df <- cbind(as.data.frame(p.adjust(hypdriv.df$P.Value, method = "BH")), hypdriv.df)
+#Reorder columns
+hypdriv.df <- hypdriv.df[,c(2,4:6,1,7:10)]
+colnames(hypdriv.df) <- c("logFC", "t", "P_value", "BH_P_value_hypfree", "BH_P_value_hypdriv", "B", "UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")
+write.csv(hypdriv.df, "hypdriv.csv")
+
+#Significant hits
+hypdriv.sig <- hypdriv.df[which(hypdriv.df$BH_P_value_hypdriv < 0.05),]
+write.csv(hypdriv.sig, "hypdriv_sig.csv")
+
+for(i in 1:nrow(hypdriv.sig)){
+  svg(filename = paste0(i, ".", rownames(hypdriv.sig)[i]))
+  ind_cpg_plotter(cpg_num = rownames(hypdriv.sig)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+  dev.off()
+}
+
+```
+For CD vs HC, we see some difference between CD and HCs that were deemed significant after multiple testing correction on our smaller dataset. In general the direction of change corresponds to the findings by McDermott et al. 2015. What is striking however is that CDREM appears to display a somewhat bimodal distribution, with three CDREM samples constantly falling within the region of HC. Could it be that CDREM acts as some kind of intermediate state between CDACT and HC?
+
+As was expected, no significant hits were found in the IBDACT vs IBDREM cohort as neither McDermott's nor our comparisons were significant.
+
+##############
+# aTNF usage #
+##############
+
+I am not sure how much truth the comparisons between CDACT and CDREM hold, mainly because "Active" and "Remissive" was defined as the inflammatory state when the patient got his/her blood drawn. In other words, "CDACT" are the patients whose blood was drawn when they experienced an inflammatory episode, while "CDREM" are patients whose blood was drawn while they were not experiencing an inflammatory episode. My biggest issue with this is the fact that they might not be very comparable - a better comparison would be "active" and "remissive" CD states within the same patient ( at different points in time). This makes comparison with aTNF usage rather hard, as the aTNF drugs were most likely used in a clinical setting instead of in a controlled fashion prior to the measurement (i.e. intervention model). For such an intervention model, I could build the following model:
+
+Meth ~ CD + Treatment + CD:Treatment
+
+Here I model the methylation status (dependent variable) as the result of active CD, aTNF treatment and the interaction between CD and aTNF treatment. At this point in time, given the unknown variable of how/when aTNF was used I cannot conclude anything from this model. A second issue is that the "active" or "remissive" state of the patient appears to be correlated to the aTNF usage ("remissive" CD-patients being enriched in aTNF users as opposed to "active" CD-patients). Nonetheless, I will try it out what I find by comparing CD-patients that are aTNF users versus CD-patients that are non-aTNF users.
+```{r CDACT vs CDREM with aTNF}
+
+dir.create("aTNF/aTNF+ACT")
+setwd("aTNF/aTNF+ACT")
+
+pheno.CD <- pData(GMset.rmout)[grep("(CDACT|CDREM)", pData(GMset.rmout)$inclusionnr),]
+pheno.CD$medicationrelevant[grep("TNF", pheno.CD$medicationrelevant)] <- "aTNF"
+pheno.CD$medicationrelevant[-grep("TNF", pheno.CD$medicationrelevant)] <- "None"
+pheno.CD$INCLgroup <- gsub("2", "ACT", pheno.CD$INCLgroup)
+pheno.CD$INCLgroup <- gsub("3", "REM", pheno.CD$INCLgroup)
+
+M.CD <- M.culled[,grep("(CDACT|CDREM)", pData(GMset.rmout)$inclusionnr)]
+Beta.CD <- Beta.culled[,grep("(CDACT|CDREM)", pData(GMset.rmout)$inclusionnr)]
+
+CD.state <- as.factor(pheno.CD$INCLgroup)
+CD.state <- relevel(x = CD.state, ref = "REM")
+CD.aTNF <- relevel(x = as.factor(pheno.CD$medicationrelevant), ref = "None")
+
+design.CD <- model.matrix(~CD.state + CD.aTNF + CD.state:CD.aTNF)
+colnames(design.CD) <- c("(Intercept)", "Active", "aTNF", "Active:aTNF")
+
+#CD: ACT vs REM
+fit.CD <- lmFit(object = M.CD, design = design.CD)
+fit.CD.eb <- eBayes(fit.CD)
+CD.ACT.top <- topTable(fit = fit.CD.eb, coef = 2, number = "Inf")
+CD.ACT.top <- cbind(CD.ACT.top, annotation.culled[rownames(CD.ACT.top), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(CD.ACT.top, "CD.ACT.top.csv")
+ind_cpg_plotter("cg25721040", betas = Beta.CD, factor_interest = CD.state)
+ind_cpg_plotter("cg13885357", betas = Beta.CD, factor_interest = CD.state)
+
+#CD: aTNF vs non-aTNF
+CD.aTNF.top <- topTable(fit = fit.CD.eb, coef = 3, number = "Inf")
+CD.aTNF.top <- cbind(CD.aTNF.top, annotation.culled[rownames(CD.aTNF.top), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(CD.aTNF.top, "CD.aTNF.top.csv")
+ind_cpg_plotter(cpg_num = "cg25721040", betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+ind_cpg_plotter(cpg_num = "cg13885357", betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+
+#CD: interaction ACT vs REM and aTNF vs non-aTNF
+CD.ACTaTNF.top <- topTable(fit = fit.CD.eb, coef = 4, number = "Inf")
+CD.ACTaTNF.top <- cbind(CD.ACTaTNF.top, annotation.culled[rownames(CD.ACTaTNF.top), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(CD.ACTaTNF.top, "CD.ACTaTNF.top.csv")
+ind_cpg_plotter(cpg_num = "cg09175811", betas = Beta.CD, factor_interest = pheno.CD$INCLgroup)
+ind_cpg_plotter(cpg_num = "cg09175811", betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+
+top.CD.aTNF.beta <- Beta.CD[c("cg25721040", "cg13885357", "cg09175811"),]
+colnames(top.CD.aTNF.beta) <- pheno.CD$inclusionnr
+
+```
+There appear to be some significant hits, but closer analysis using the dotboxplot shows that the means are driven by two outliers, for ACT vs REM and aTNF vs non-aTNF the outliers appear to be CDREM-5 and CDREM-8, while the significant hits based on the interaction term appears to yield another two outliers, namely CDACT-2 and CDACT-7. Comparison of the medians does not yield any significant difference.
+
+```{r CDREM-5 and CDREM-8, echo = F}
+pData(GMset.culled)[c("3998634004_R03C01", "3998590010_R02C02"),]
+View(pData(GMset.culled))
+```
+No clear correlation could be found between CDREM-5 and CDREM-8. Hierarchical clustering had not clustered them together.
+
+Here we aim to just look at TNF usage thereby dropping the whole "active" and "remissive" constructs.
+```{r aTNF vs non-aTNF, echo = F}
+
+dir.create("aTNF")
+setwd("../aTNF")
+
+design.TNF <- model.matrix(~CD.aTNF)
+fit.TNF <- lmFit(M.CD, design.TNF)
+fit.TNF.eb <- eBayes(fit.TNF)
+top.TNF <- topTable(fit.TNF.eb, coef = 2, number = Inf)
+top.TNF <- cbind(top.TNF, annotation.total[rownames(top.TNF), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+write.csv(x = top.TNF, file = "top.aTNF.csv")
+
+for(i in 1:20){
+  svg(filename = paste0(i, ".", rownames(top.TNF)[i]))
+  ind_cpg_plotter(cpg_num = rownames(top.TNF)[i], betas = Beta.CD, factor_interest = CD.aTNF)
+  dev.off()
+}
+
+```
+After multiple correction, there are no significant hits anymore, but when plotting the top 20, for some reason most medians (nor means) do not appear to overlap. Could the methylation status of monocytes be influenced by aTNF usage in a systematic manner. Such an experiment could potentially provide interesting insights into the molecular pathways of aTNF medication.
+
+###########
+# Version #
+###########
+```{r session info, echo = F}
+sessionInfo()
+```
+23 November 2015:
+R version 3.2.2 (2015-08-14)
+Platform: x86_64-pc-linux-gnu (64-bit)
+Running under: Ubuntu 15.04
+
+locale:
+ [1] LC_CTYPE=en_US.UTF-8       LC_NUMERIC=C               LC_TIME=nl_NL.UTF-8        LC_COLLATE=en_US.UTF-8     LC_MONETARY=nl_NL.UTF-8   
+ [6] LC_MESSAGES=en_US.UTF-8    LC_PAPER=nl_NL.UTF-8       LC_NAME=C                  LC_ADDRESS=C               LC_TELEPHONE=C            
+[11] LC_MEASUREMENT=nl_NL.UTF-8 LC_IDENTIFICATION=C       
+
+attached base packages:
+ [1] grid      parallel  stats4    stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] sva_3.18.0                                         mgcv_1.8-9                                         nlme_3.1-122                                      
+ [4] shinyMethyl_1.4.0                                  shiny_0.12.2                                       MethylAid_1.4.0                                   
+ [7] gridExtra_2.0.0                                    VennDiagram_1.6.16                                 futile.logger_1.4.1                               
+[10] qvalue_2.2.0                                       GO.db_3.2.2                                        BiasedUrn_1.06.1                                  
+[13] coMET_1.2.0                                        psych_1.5.8                                        biomaRt_2.26.0                                    
+[16] BiocInstaller_1.20.0                               missMethyl_1.4.0                                   doParallel_1.0.10                                 
+[19] org.Hs.eg.db_3.2.3                                 RSQLite_1.0.0                                      DBI_0.3.1                                         
+[22] TxDb.Hsapiens.UCSC.hg19.knownGene_3.2.2            GenomicFeatures_1.22.4                             AnnotationDbi_1.32.0                              
+[25] doRNG_1.6                                          rngtools_1.2.4                                     pkgmaker_0.22                                     
+[28] registry_0.3                                       genefilter_1.52.0                                  FlowSorted.Blood.450k_1.8.0                       
+[31] ggplot2_1.0.1                                      rafalib_1.0.0                                      RColorBrewer_1.1-2                                
+[34] plyr_1.8.3                                         reshape_0.8.5                                      matrixStats_0.15.0                                
+[37] IlluminaHumanMethylation450kanno.ilmn12.hg19_0.2.1 IlluminaHumanMethylation450kmanifest_0.4.0         minfi_1.16.0                                      
+[40] bumphunter_1.10.0                                  locfit_1.5-9.1                                     iterators_1.0.8                                   
+[43] foreach_1.4.3                                      Biostrings_2.38.0                                  XVector_0.10.0                                    
+[46] SummarizedExperiment_1.0.1                         lattice_0.20-33                                    Biobase_2.30.0                                    
+[49] Gviz_1.14.0                                        GenomicRanges_1.22.1                               GenomeInfoDb_1.6.1                                
+[52] IRanges_2.4.1                                      S4Vectors_0.8.2                                    BiocGenerics_0.16.1                               
+[55] limma_3.26.3                                      
+
+loaded via a namespace (and not attached):
+ [1] Hmisc_3.17-0                       igraph_1.0.1                       splines_3.2.2                      BiocParallel_1.4.0                
+ [5] gridBase_0.4-7                     digest_0.6.8                       htmltools_0.2.6                    magrittr_1.5                      
+ [9] BSgenome_1.38.0                    cluster_2.0.3                      annotate_1.48.0                    ggbio_1.18.1                      
+[13] siggenes_1.44.0                    colorspace_1.2-6                   RCurl_1.95-4.7                     hexbin_1.27.1                     
+[17] graph_1.48.0                       GEOquery_2.36.0                    survival_2.38-3                    VariantAnnotation_1.16.3          
+[21] hash_2.2.6                         ruv_0.9.6                          gtable_0.1.2                       zlibbioc_1.16.0                   
+[25] scales_0.3.0                       futile.options_1.0.0               pheatmap_1.0.7                     GGally_0.5.0                      
+[29] Rcpp_0.12.2                        xtable_1.8-0                       foreign_0.8-66                     mclust_5.1                        
+[33] OrganismDbi_1.12.0                 preprocessCore_1.32.0              Formula_1.2-1                      acepack_1.3-3.3                   
+[37] XML_3.98-1.3                       nnet_7.3-11                        labeling_0.3                       reshape2_1.4.1                    
+[41] munsell_0.4.2                      tools_3.2.2                        stringr_1.0.0                      knitr_1.11                        
+[45] beanplot_1.2                       rgl_0.95.1367                      methylumi_2.16.0                   pbapply_1.1-1                     
+[49] RBGL_1.46.0                        mime_0.4                           nor1mix_1.2-1                      compiler_3.2.2                    
+[53] statmod_1.4.22                     stringi_1.0-1                      FDb.InfiniumMethylation.hg19_2.2.0 Matrix_1.2-2                      
+[57] trackViewer_1.6.1                  multtest_2.26.0                    bitops_1.0-6                       httpuv_1.3.3                      
+[61] rtracklayer_1.30.1                 R6_2.1.1                           latticeExtra_0.6-26                codetools_0.2-14                  
+[65] lambda.r_1.1.7                     dichromat_2.0-0                    MASS_7.3-45                        proto_0.3-10                      
+[69] GenomicAlignments_1.6.1            Rsamtools_1.22.0                   mnormt_1.5-3                       colortools_0.1.5                  
+[73] mixOmics_5.1.2                     quadprog_1.5-5                     rpart_4.1-10                       base64_1.1                        
+[77] illuminaio_0.12.0                  biovizBase_1.18.0                  ellipse_0.3-8                     
