@@ -88,7 +88,6 @@ if(visualize_normalization){
 
 # Find the 450k genes annotations associated to the CpGs
 annotation.total <- getAnnotation(GMset)
-annotation.total.gr <- makeGRangesFromDataFrame(annotation.culled, keep.extra.columns = T, start.field = "pos", end.field = "pos")
 # Find the transcripts of the genes
 gene.transcripts <- annotateTranscripts(TxDb.Hsapiens.UCSC.hg19.knownGene)
 
@@ -292,7 +291,7 @@ if(method_1){
   mv.lmfit2.ebayes.top <- topTable(mv.lmfit2.ebayes, coef = 2, num = Inf, sort.by = "P")
 }
 
-#Method 2: split M.culled into sub matrices and calculate the linear model for each submatrix. NOT RECOMMENDED
+#Method 2: split M.culled into sub matrices and calculate the linear model for each submatrix. NOT ADVISED
 if(method_2){
   
   #CDACT vs CDREM
@@ -440,17 +439,6 @@ if(method_2){
     image(t(sva.CDACT_HC.batch[1:1000,]), col = colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(100), zlim = c(-5,5), xaxt = "n", yaxt = "n", main = "Batches")
     image(t(sva.CDACT_HC.error[1:1000,]), col = colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(100), zlim = c(-5,5), xaxt = "n", yaxt = "n", main = "Unaccounted")
   }
-}
-
-#Method 3: split M.culled according to cases and controls (no three levels anymore; only Crohn's or Control)
-if(method_3){
-  
-  pheno.3 <- gsub("(CDACT|CDREM)", "Crohn", fac_int)
-  bin.design <- model.matrix(~relevel(factor(pheno.3), "HC"))
-  
-  #No correction
-  lmfit.3 <- lmFit(object = M.culled, design = bin.design)
-  
 }
 
 ##############################################
