@@ -88,6 +88,7 @@ if(visualize_normalization){
 
 # Find the 450k genes annotations associated to the CpGs
 annotation.total <- getAnnotation(GMset)
+annotation.total.gr <- makeGRangesFromDataFrame(annotation.culled, keep.extra.columns = T, start.field = "pos", end.field = "pos")
 # Find the transcripts of the genes
 gene.transcripts <- annotateTranscripts(TxDb.Hsapiens.UCSC.hg19.knownGene)
 
@@ -291,7 +292,7 @@ if(method_1){
   mv.lmfit2.ebayes.top <- topTable(mv.lmfit2.ebayes, coef = 2, num = Inf, sort.by = "P")
 }
 
-#Method 2: split M.culled into sub matrices and calculate the linear model for each submatrix. NOT ADVISED
+#Method 2: split M.culled into sub matrices and calculate the linear model for each submatrix. NOT RECOMMENDED
 if(method_2){
   
   #CDACT vs CDREM
@@ -440,6 +441,89 @@ if(method_2){
     image(t(sva.CDACT_HC.error[1:1000,]), col = colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(100), zlim = c(-5,5), xaxt = "n", yaxt = "n", main = "Unaccounted")
   }
 }
+
+#Method 3: split M.culled according to cases and controls (no three levels anymore; only Crohn's or Control)
+if(method_3){
+  
+  pheno.3 <- gsub("(CDACT|CDREM)", "Crohn", fac_int)
+  bin.design <- model.matrix(~relevel(factor(pheno.3), "HC"))
+  
+  #No correction
+  lmfit.3 <- lmFit(object = M.culled, design = bin.design)
+  lmfit.3.ebayes <- eBayes(lmfit.3)
+  top.3 <- topTable(fit = lmfit.3.ebayes, coef = 2, number = Inf, adjust.method = "BH")
+  top.3 <- cbind(top.3, annotation.total[rownames(top.3),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+  
+  #RUVfit
+  #negcons.3 <- !(rownames(top.3) %in% rownames(top.3[nrow(top.3)-1000:nrow(top.3), ]))
+  negcons.3 <- rownames(M.culled) %in% rownames(top.3[which(top.3$adj.P.Val > 0.5),])
+  ruvfit.3 <- RUVfit(data = M.culled, design = bin.design, coef = 2, ctl = negcons.3)
+  ruvfit.3.adj <- RUVadj(ruvfit.3)
+  ruvfit.3.top <- topRUV(ruvfit.3.adj, number = Inf)
+  ruvfit.3.top <- cbind(ruvfit.3.top, annotation.total[rownames(ruvfit.3.top),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+  
+  #SVA
+  svafit.3 <- sva(M.culled, bin.design)
+  design.sva.3 <- cbind(bin.design, svafit.3$sv)
+  colnames(design.sva.3) <- c("(Intercept)", "Crohn", "1", "2", "3", "4")
+  
+  lmfit.sva.3 <- lmFit(M.culled, design.sva.3)
+  lmfit.sva.ebayes.3 <- eBayes(lmfit.sva.3)
+  lmfit.sva.top.3 <- topTable(fit = lmfit.sva.ebayes.3, coef = 2, number = Inf, adjust.method = "BH")
+  lmfit.sva.top.3 <- cbind(lmfit.sva.top.3, annotation.total[rownames(lmfit.sva.top.3),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+  
+  #GO
+  require(BiasedUrn)
+  require(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+  go.sva <- gometh(sig.cpg = rownames(lmfit.sva.top.3[which(lmfit.sva.top.3$adj.P.Val < 0.05),]), all.cpg = rownames(annotation.culled), plot.bias = T, prior.prob = T)
+  go.sva.sig <- go.sva[go.sva$FDR < 0.05,]
+  
+  #Comparison
+  hist(top.3$P.Value, breaks = 1000, main = "None")
+  qqnorm(top.3$t, pch = 16, main = "None", ylim = c(-10,10))
+  abline(0,1)
+  hist(lmfit.sva.top.3$P.Value, breaks = 1000, main = "SVA")
+  qqnorm(lmfit.sva.top.3$t, pch = 16, main = "SVA", ylim = c(-10,10))
+  abline(0,1)
+  hist(ruvfit.3.top$p, breaks = 1000, main = "RUV")
+  qqnorm(ruvfit.3.top$t, pch = 16, main = "RUV", ylim = c(-10,10))
+  abline(0,1)
+  
+}
+
+#####################
+# Hypothesis driven #
+#####################
+
+GWAS_genes <- read.csv('/home/ayliyim/Dropbox/Epimac/Data/Crohn Whole Blood 2013/Target_Genes/Candidate Genes V3_GWAS.csv')
+EWAS_genes <- read.csv('/home/ayliyim/Dropbox/Epimac/Data/Crohn Whole Blood 2013/Target_Genes/Candidate Genes V3_EWAS.csv')
+
+ewasdata <- unlist(unique(EWAS_genes$GENE))
+ewasdata <- ewasdata[-which(ewasdata == "")]
+gwasdata <- unlist(unique(GWAS_genes$GENE))
+gwasdata <- gwasdata[-which(gwasdata == "")]
+
+#Hypothesis-driven: Genes obtained from EWAS and GWAS
+unique_genes <- c(as.vector(ewasdata), as.vector(gwasdata))
+
+#Using the annotated gene data
+cpg <- sapply(unique_genes, function(x) names(annotation.culled.gr[grep(paste0("(^|;)*", x, "($|;)*"), annotation.culled.gr$UCSC_RefGene_Name), ]))
+cpg.vector <- unique(as.vector(unlist(cpg)))
+
+require(dplyr)
+
+#None
+top3.hypdriv <- top.3[cpg.vector,]
+top3.hypdriv$p.BH.hypdriv <- p.adjust(top3.hypdriv$P.Value, method = "BH")
+top3.hypdriv <- top3.hypdriv[order(top3.hypdriv$p.BH.hypdriv),]
+#SVA
+svafit.3.hypdriv <- lmfit.sva.top.3[cpg.vector,]
+svafit.3.hypdriv$p.BH.hypdriv <- p.adjust(svafit.3.hypdriv$P.Value, method = "BH")
+svafit.3.hypdriv <- svafit.3.hypdriv[order(svafit.3.hypdriv$p.BH.hypdriv),]
+#RUV
+ruvfit.3.hypdriv <- ruvfit.3.top[cpg.vector,]
+ruvfit.3.hypdriv$p.BH.hypdriv <- p.adjust(ruvfit.3.hypdriv$p, method = "BH")
+ruvfit.3.hypdriv <- ruvfit.3.hypdriv[order(ruvfit.3.hypdriv$p.BH.hypdriv),]
 
 ##############################################
 # RUV: See missMethyl package (multivariate) #
