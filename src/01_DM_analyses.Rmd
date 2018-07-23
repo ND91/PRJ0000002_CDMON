@@ -682,15 +682,6 @@ sva.top.rmout.bin <- topTable(fit = sva.fit2.rmout.bin.eb, coef = 2, number = In
 sva.top.rmout.bin <- cbind(sva.top.rmout.bin, annotation.total[rownames(sva.top.rmout.bin), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(sva.top.rmout.bin, "CD_HC_Age_SVA.csv")
 
-#############################
-# DMRs: Age corrected + SVA #
-#############################
-require(doParallel)
-require(pkgmaker)
-registerDoParallel(detectCores()-4)
-
-dmrs.rmout <- bumphunter(object = GMset.rmout, design = sva.design.rmout.bin, coef = 2, cutoff = 0.3, B = 100, nullMethod = "bootstrap")
-
 #Check the P-value distribution
 require(rafalib)
 mypar(1,2)
@@ -702,7 +693,37 @@ qqline(sva.fit2.rmout.bin.eb$p.value[,2])
 #Volcano plot of adjusted (moderated) P-values
 mypar(1,1)
 volplot <- data.frame(Coef = sva.fit2.rmout.bin.eb$coefficients[,2], Padj = sva.top.rmout.bin[rownames(sva.fit2.rmout.bin.eb),]$adj.P.Val)
+volplot$threshold <- (volplot$Padj < 0.05)*1
+volplot$threshold[which(volplot$threshold == 1)] <- "Significant"
+volplot$threshold[which(volplot$threshold == 0)] <- "Non significant"
+volplot$threshold <- as.factor(volplot$threshold)
+volplot$threshold <- relevel(volplot$threshold, ref = "Significant")
+
+#Beta
 x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
+  y.lim <- c(0,-log10(0.05))
+} else{
+  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
+}
+
+##ggplot
+Cairo(file = "dmps_CDvHC_volcanoBeta_enlarged_ggplot.svg", type = "svg", units = "px", width = 700, height = 800, dpi = 90, bg = "white")
+ggplot(volplot, aes(x = Coef, y = -log10(Padj), color = threshold)) + 
+  geom_point(alpha = 0.4, size = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "longdash") +
+  theme_bw() +
+  xlim(c(-0.5, 0.5)) +
+  ylab("-log10(P.adj)") +
+  xlab("Mean effect size (Beta)") +
+  scale_color_brewer(palette = "Dark2") +
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14),
+        legend.title = element_blank(),
+        legend.position = "bottom")
+dev.off()
+
+
 if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
   y.lim <- c(0,-log10(0.05))
 } else{
@@ -710,6 +731,12 @@ if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
 }
 plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
 abline(h = -log10(0.05), lty = 1)
+
+
+
+
+
+
 ```
 Similar as when HC1 was left in, only SVA generates a significant hit, namely cg11267810. In addition to this significant hit, we report two more almost significant hits: cg13149147 and cg11664417 with an adjusted P-value of 0.07134581. 
 
@@ -739,6 +766,91 @@ cpg_dotboxplot(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = fac
 annotation.total["cg11664417",]
 ```
 Stratifying the plots based on active or remissive CD, reveals that the outliers found in CD are located in CDACT and CDREM. The plots show that the CpG indeed appears to be differential in HC versus CD (both CDACT and CDREM). If we leave HC1 in there, it is quite obvious that this sample is a true outlier. Up to a certain extent HC6 does so as well.
+
+In the following chunk we aim to find DMRs based on the Age and SVA corrected data. 
+```{r DMRs Age and SVA, echo = F}
+#Find transcripts
+require(TxDb.Hsapiens.UCSC.hg19.knownGene)
+gene.transcripts <- annotateTranscripts(TxDb.Hsapiens.UCSC.hg19.knownGene)
+
+#############################
+# DMRs: Age corrected + SVA #
+#############################
+require(doParallel)
+require(pkgmaker)
+registerDoParallel(detectCores()-4)
+
+#smooth = F
+n <- 4 #Minimal number of CpGs per DMR
+dmrs.rmout.sva <- bumphunter(object = GMset.rmout, design = sva.design.rmout.bin, coef = 2, cutoff = 0.3, B = 500, nullMethod = "bootstrap")
+if(!is.null(dmrs.rmout.sva$table)){
+  dmrs.rmout.sva.culled <- dmrs.rmout.sva$tab[dmrs.rmout.sva$table$L >= n,]
+  dmrs.rmout.sva.culled.gr <- makeGRangesFromDataFrame(dmrs.rmout.sva.culled, keep.extra.columns = TRUE)
+  #Find nearest genes and append information
+  nearestgenes.uv.gr <- gene.transcripts[nearest(x = dmrs.rmout.sva.culled.gr, subject = gene.transcripts),]
+  dmrs.rmout.sva.culled <- cbind(dmrs.rmout.sva.culled, Gene_start = as.data.frame(ranges(nearestgenes.uv.gr))$start, Gene_end = as.data.frame(ranges(nearestgenes.uv.gr))$end, Gene_Entrez = nearestgenes.uv.gr$Entrez, Gene_Name = nearestgenes.uv.gr$Gene)
+  
+  write.csv(dmrs.rmout.sva.culled, "dmrs_CDvHC.csv")
+  
+  dmrs.rmout.sva.culled.gr <- makeGRangesFromDataFrame(dmrs.rmout.sva.culled, keep.extra.columns = TRUE)
+}
+
+#smooth = T
+dmrs.rmout.sva.smooth <- bumphunter(object = GMset.culled, design = design.uv, coef = 2, cutoff = 0.08, B = 500, nullMethod = "bootstrap", smooth = T, smoothFunction = loessByCluster)
+if(!is.null(dmrs.rmout.sva.smooth$table)){
+  dmrs.rmout.sva.smooth.culled <- dmrs.rmout.sva.smooth$tab[dmrs.rmout.sva.smooth$table$L >= n,]
+  dmrs.rmout.sva.smooth.culled.gr <- makeGRangesFromDataFrame(dmrs.rmout.sva.smooth.culled, keep.extra.columns = TRUE)
+  #Find nearest genes and append information
+  nearestgenes.uv.smooth.gr <- gene.transcripts[nearest(x = dmrs.rmout.sva.smooth.culled.gr, subject = gene.transcripts),]
+  dmrs.rmout.sva.smooth.culled <- cbind(dmrs.rmout.sva.smooth.culled, Gene_start = as.data.frame(ranges(nearestgenes.uv.smooth.gr))$start, Gene_end = as.data.frame(ranges(nearestgenes.uv.smooth.gr))$end, Gene_Entrez = nearestgenes.uv.smooth.gr$Entrez, Gene_Name = nearestgenes.uv.smooth.gr$Gene)
+  
+  write.csv(dmrs.rmout.sva.smooth.culled, "dmrs_CDvHC_smooth.csv")
+  
+  dmrs.rmout.sva.smooth.culled.gr <- makeGRangesFromDataFrame(dmrs.rmout.sva.smooth.culled, keep.extra.columns = TRUE)
+}  
+
+methdata_to_granges(methdata = Beta.rmout, annotation.gr = annotation.culled.gr, chr = dmrs.rmout.sva.culled[1,]$chr, start_region = dmrs.rmout.sva.culled[1,]$start, end_region = dmrs.rmout.sva.culled[1,]$end)
+
+#HOOK2
+
+
+Cairo(file = "HOOK2_dmr.svg", type = "svg", units = "px", width = 800, height = 1200, dpi = 90, bg = "white")
+dmr_genomeplot(name = dmrs.rmout.sva.culled$Gene_Name[1], chr = dmrs.rmout.sva.culled$chr[1], betas = Beta.rmout, annotation.gr = annotation.culled.gr, factor_interest = factor_interest.bin.rmout, start_dmr = dmrs.rmout.sva.culled$start[1], end_dmr = dmrs.rmout.sva.culled$end[1], flanks = 1000, diff_symbol = T, dotsize = 0.5, Reg = T)
+dev.off()
+
+```
+One of the most interesting hits that came out of bumphunter came a (significant!) cluster at chr19:12876846-12877188, which was associated to HOOK2. Of note are the SNPs on cg04657146 and cg11738485, which reside within the probe, not the CpG. Visualization using the dmr_genomeplot function confirms our suspicion that a SNP is involved as the infamous "triplet of death" is visible. It is interesting however that all the CpGs reveal this SNP... Perhaps they are in LD with one another. The question arises whether the same people are 
+
+```{r HOOK2, echo = F}
+
+#Individual CpGs
+HOOK2.beta <- Beta.rmout[c("cg06417478", "cg04657146", "cg11738485", "cg23899408"),]
+colnames(HOOK2.beta) <- factor_interest.bin.rmout
+HOOK2.melt <- melt(HOOK2.beta)
+colnames(HOOK2.melt) <- c("CpG", "Cohort", "Beta")
+HOOK2.melt$CpG <- factor(HOOK2.melt$CpG, levels = c("cg06417478", "cg04657146", "cg11738485", "cg23899408"))
+
+#Box-stripplot
+Cairo(file = "HOOK2_dmr_CpGs.svg", type = "svg", units = "px", width = 800, height = 500, dpi = 90, bg = "white")
+ggplot(data = HOOK2.melt, aes(x = CpG, y = Beta, ymax = max(Beta)*1.05, fill = Cohort)) + 
+  ylim(0,1) +
+  facet_wrap(~CpG, scales = "free", ncol = 4) +
+  geom_boxplot(aes(fill = Cohort), outlier.colour = NA) + 
+  geom_point(size = 1.5, aes(y = Beta, group = Cohort, shape = Cohort), position = position_jitterdodge(dodge.width = 0.9)) + 
+  theme_bw() + 
+  xlab("") + 
+  ylab("beta") + 
+  theme(strip.text.x = element_text(size = 10),
+        axis.text = element_text(size = 8), 
+        axis.title = element_text(size = 10), 
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        legend.title = element_text(size = 8),
+        legend.text = element_text(size = 10))
+dev.off()
+
+```
+
 
 #############
 # Contrasts #
@@ -979,6 +1091,22 @@ for(i in 1:nrow(sig.CD.ACTaTNF.top)){
   cpg_dotboxplot(cpg_num = rownames(sig.CD.ACTaTNF.top)[i], betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
   dev.off()
 }
+
+#HOOK2
+Cairo(file = "CDvHC_HOOK2_cg26639747.svg", type = "svg", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+cpg_dotboxplot(cpg_num = "cg06417478", betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
+dev.off()
+Cairo(file = "CDvHC_HOOK2_cg04657146.svg", type = "svg", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+cpg_dotboxplot(cpg_num = "cg04657146", betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
+dev.off()
+Cairo(file = "CDvHC_HOOK2_cg11738485.svg", type = "svg", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+cpg_dotboxplot(cpg_num = "cg11738485", betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
+dev.off()
+Cairo(file = "CDvHC_HOOK2_cg23899408.svg", type = "svg", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+cpg_dotboxplot(cpg_num = "cg23899408", betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
+dev.off()
+
+
 ```
 Here we observe that aTNF treatment (or the lack thereof) results in significant differential methylation as compared to their opposite within the same group (CDACT or CDREM). Some of these DMPs appear to fall at a methylation level of 0.5, which would indicate that perhaps a SNP underlie these CpGs, however analysis of these CpGs using the UCSC genome browser yields no result for a SNP whatsoever. Keep in mind that the results we observe here require validation in an own study as our aTNF-defiants are in limited numbers (n=2). 
   Biologically speaking the observed phenotype is rather confusing, why would aTNF usage when CDACT (or the absence of aTNF usage when CDREM) confer the methylation pattern? Could it be that deviants of CDACT and CDREM simply behave differently and that it has nothing to do with the aTNF usage, but rather the patient itself? 
