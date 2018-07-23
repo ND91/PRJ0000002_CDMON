@@ -677,6 +677,7 @@ sva.design.rmout.bin <- cbind(design.rmout.bin, sva.fit.rmout.bin$sv)
 
 #DMPs
 sva.fit2.rmout.bin <- lmFit(M.rmout, sva.design.rmout.bin)
+#sva.fit2.rmout.bin <- lmFit(Beta.rmout, sva.design.rmout.bin)
 sva.fit2.rmout.bin.eb <- eBayes(sva.fit2.rmout.bin)
 sva.top.rmout.bin <- topTable(fit = sva.fit2.rmout.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
 sva.top.rmout.bin <- cbind(sva.top.rmout.bin, annotation.total[rownames(sva.top.rmout.bin), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
@@ -690,9 +691,12 @@ hist(sva.fit2.rmout.bin.eb$p.value[,2], breaks = 1000, main = "P-value Distribut
 #QQ plot
 qqnorm(sva.fit2.rmout.bin.eb$p.value[,2], pch = 16)
 qqline(sva.fit2.rmout.bin.eb$p.value[,2])
+
 #Volcano plot of adjusted (moderated) P-values
-mypar(1,1)
-volplot <- data.frame(Coef = sva.fit2.rmout.bin.eb$coefficients[,2], Padj = sva.top.rmout.bin[rownames(sva.fit2.rmout.bin.eb),]$adj.P.Val)
+sva.M.beta <- sva.fit2.rmout.bin.eb$coefficients[,2]
+sva.beta <- (2^(sva.M.beta))/(2^(sva.M.beta)+1)-mean((2^(sva.M.beta))/(2^(sva.M.beta)+1))
+
+volplot <- data.frame(Coef_M = sva.fit2.rmout.bin.eb$coefficients[,2], Coef_Beta = sva.beta, Padj = sva.top.rmout.bin[rownames(sva.fit2.rmout.bin.eb),]$adj.P.Val)
 volplot$threshold <- (volplot$Padj < 0.05)*1
 volplot$threshold[which(volplot$threshold == 1)] <- "Significant"
 volplot$threshold[which(volplot$threshold == 0)] <- "Non significant"
@@ -700,7 +704,8 @@ volplot$threshold <- as.factor(volplot$threshold)
 volplot$threshold <- relevel(volplot$threshold, ref = "Significant")
 
 #Beta
-x.lim <- c(-max(range(volplot$Coef)), max(range(volplot$Coef)))
+#x.lim <- c(-max(abs(range(volplot$Coef_M))), max(abs(range(volplot$Coef_M))))
+x.lim <- c(-0.5,0.5)
 if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
   y.lim <- c(0,-log10(0.05))
 } else{
@@ -708,12 +713,13 @@ if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
 }
 
 ##ggplot
-Cairo(file = "dmps_CDvHC_volcanoBeta_enlarged_ggplot.svg", type = "svg", units = "px", width = 700, height = 800, dpi = 90, bg = "white")
-ggplot(volplot, aes(x = Coef, y = -log10(Padj), color = threshold)) + 
+Cairo(file = "dmps_CDvHC_sva.svg", type = "svg", units = "px", width = 700, height = 800, dpi = 90, bg = "white")
+ggplot(volplot, aes(x = Coef_Beta, y = -log10(Padj), color = threshold)) + 
   geom_point(alpha = 0.4, size = 1) +
   geom_hline(yintercept = -log10(0.05), linetype = "longdash") +
   theme_bw() +
-  xlim(c(-0.5, 0.5)) +
+  xlim(x.lim) +
+  ylim(y.lim) +
   ylab("-log10(P.adj)") +
   xlab("Mean effect size (Beta)") +
   scale_color_brewer(palette = "Dark2") +
@@ -722,21 +728,6 @@ ggplot(volplot, aes(x = Coef, y = -log10(Padj), color = threshold)) +
         legend.title = element_blank(),
         legend.position = "bottom")
 dev.off()
-
-
-if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
-  y.lim <- c(0,-log10(0.05))
-} else{
-  y.lim <- c(0, range(-log10(volplot$Padj))[2]+1)
-}
-plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
-abline(h = -log10(0.05), lty = 1)
-
-
-
-
-
-
 ```
 Similar as when HC1 was left in, only SVA generates a significant hit, namely cg11267810. In addition to this significant hit, we report two more almost significant hits: cg13149147 and cg11664417 with an adjusted P-value of 0.07134581. 
 
@@ -756,8 +747,15 @@ for(i in 1:nrow(sva.sig.rmout)){
 Plotting revealed that cg13149147 does not confer any differential methylation, perhaps the outliers in the CD and HC group mess up the calculation. However cg11267810 and cg11664417 appear to be differential. In the next chunk we plotted them and stratified the plots based on the active or remissive state of CD Interestingly, this CpG has not been associated to any gene. 
 ```{r DMP: cg11267810, echo = F}
 cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest)
+
+Cairo(file = "CDvHC_cg11267810.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
 cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+dev.off()
+
+Cairo(file = "CDvHC_cg11267810.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
 cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+dev.off()
+
 annotation.total["cg11267810",]
 
 cpg_dotboxplot(cpg_num = "cg11664417", betas = Beta.culled, factor_interest = factor_interest)
