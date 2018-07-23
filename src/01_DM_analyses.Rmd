@@ -100,160 +100,6 @@ methylAid_nonvisual <- function(RGset, MU_threshold = 10.50, NP_threshold = 11.7
   return(targets.correct = targets.correct)
 }
 
-#ind_cpg_plotter produces a boxplot overlayed by a stripplot of a specific CpG
-ind_cpg_plotter <- function(cpg_num, betas, factor_interest, gg.plot = T){
-  require(ggplot2)
-  require(gridExtra)
-  
-  if(is.null(cpg_num)){
-    message("No CpG number defined")
-  } else if(is.null(betas)){
-    message("No Beta matrix provided")
-  } else if(is.null(factor_interest)){
-    message("No factor of interest provided")
-  }
-  
-  beta.df <- data.frame(beta = betas[cpg_num,], cohort = factor_interest)
-  if(gg.plot == T){
-    small_plot <- ggplot(data = beta.df, aes(x = cohort, y = beta)) + 
-      ylim(c(0,1)) + 
-      geom_boxplot(aes(fill = cohort), outlier.colour = NA) + 
-      geom_jitter(size = 3, aes(shape = cohort)) + 
-      theme_bw() + 
-      xlab("") + 
-      theme(axis.text.x = element_text(angle = 45, hjust = 1))
-    
-    large_plot <- ggplot(data = beta.df, aes(x = cohort, y = beta)) + 
-      geom_boxplot(aes(fill = cohort), outlier.colour = NA) + 
-      geom_jitter(size = 3, aes(shape = cohort)) + 
-      theme_bw() + 
-      ggtitle("Enlarged") + 
-      theme(legend.position = "none") + 
-      xlab("") + 
-      theme(axis.text.x = element_text(angle = 45, hjust = 1))
-    grid.arrange(small_plot, large_plot, ncol = 2, top = cpg_num)
-  } else{
-    boxplot(beta~cohort, data = beta.df, main = cpg_num, ylim = c(0,1), ylab = "Beta")
-    stripchart(beta~cohort, data = beta.df, vertical = T, method = "jitter", pch = 16, add = T, col = "blue")
-  }
-}
-
-#dmr_plotter is a function which plots the regions of interest within a region frame
-dmr_plotter <- function(name, chr, betas, sample_names, annotation.gr, pheno, start_dmr, end_dmr, simplified = T, flanks = 1000, genome_version = "hg19", pdf = F){
-  require(Gviz)
-  require(GenomicRanges)
-  
-  #Check DMR
-  dmr.hg19.annotation <- annotation.gr[which(seqnames(annotation.gr) == chr),]
-  dmr.hg19.annotation <- dmr.hg19.annotation[which(start(dmr.hg19.annotation) >= start_dmr & start(dmr.hg19.annotation) <= end_dmr),]
-  dmr.hg19.annotation.clean <- dmr.hg19.annotation
-  print(dmr.hg19.annotation.clean)
-  
-  if(simplified == F){
-    #DMR track
-    dmrtrack <- AnnotationTrack(start = start_dmr, end = end_dmr, name = "DMR", chromosome = chr, genome = genome_version)
-    #DMP track
-    dmp.hg19.annotation <- dmr.hg19.annotation
-  
-    #Add the G and direction of each CpG
-    start(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "-"]) <- start(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "-"])-1
-    end(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "+"]) <- end(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "+"])+1
-    dmptrack <- AnnotationTrack(dmp.hg19.annotation, name = "DMP", col = dmp.hg19.annotation$red_end)
-  }
-  
-  #Add flanks
-  start_dmr_flanks <- start_dmr-flanks
-  end_dmr_flanks <- end_dmr+flanks
-  dmr.hg19.annotation <- annotation.gr[which(seqnames(annotation.gr) == chr),]
-  dmr.hg19.annotation <- dmr.hg19.annotation[which(start(dmr.hg19.annotation) >= start_dmr_flanks & start(dmr.hg19.annotation) <= end_dmr_flanks),]
-  
-  #Betas
-  GMset.beta <- betas
-  dmr.450k <- data.frame(seqnames = as.character(seqnames(dmr.hg19.annotation)), pos = start(dmr.hg19.annotation), GMset.beta[names(dmr.hg19.annotation),])
-  colnames(dmr.450k) <- c("seqnames", "pos", sample_names)
-  dmr.450k.gr <- makeGRangesFromDataFrame(df = dmr.450k, keep.extra.columns = T, start.field = "pos", end.field = "pos")
-  
-  #Plot
-  gtrack <- GenomeAxisTrack()
-  itrack <- IdeogramTrack(genome = genome_version, chromosome = chr)
-  grtrack <- UcscTrack(track = "RefSeq Genes", 
-                       table = "refGene", 
-                       trackType = "GeneRegionTrack", 
-                       chromosome = chr, 
-                       genome = genome_version, 
-                       rstart = "exonStarts", 
-                       rends = "exonEnds", 
-                       symbol = "name2", 
-                       strand = "strand", 
-                       shape = "arrow", 
-                       transcriptAnnotation = "symbol", 
-                       name = "RefSeq Genes", 
-                       showId = T, 
-                       from = start_dmr_flanks, 
-                       to = end_dmr_flanks, 
-                       fill = "#8282d2")
-
-  #SNP track
-  if(simplified == F){
-    snptrack <- UcscTrack(genome = genome_version, 
-                        chromosome = chr, 
-                        track = "Common SNPs(141)", 
-                        from = start_dmr_flanks, 
-                        to = end_dmr_flanks, 
-                        trackType = "AnnotationTrack", 
-                        start = "chromStart", 
-                        end = "chromEnd", 
-                        gene = "name", 
-                        feature = "func", 
-                        strand = "strand", 
-                        shape = "box",
-                        stacking = "dense",
-                        fill = "black", 
-                        name = "SNPs")
-  }
-  dtrack.450k <- DataTrack(range = dmr.450k.gr, name = "450K", ylim = c(0,1), groups = as.factor(pheno), type = c("a", "p", "g"), legend = TRUE)
- 
-  if(pdf){
-    pdf(file = paste0(getwd(), "/", name, ".pdf"))
-  }
-  
-  if(simplified == F){
-    plotTracks(list(itrack, 
-                  gtrack, 
-                  grtrack, 
-                  dtrack.450k, 
-                  dmrtrack, 
-                  dmptrack, 
-                  snptrack), 
-             from = start_dmr_flanks, 
-             to = end_dmr_flanks, 
-             main = name,
-             cex.title = 0.9,
-             cex.axis = 1,
-             add53 = T,
-             add35 = T,
-             littleTicks = T)  
-  } else{
-        plotTracks(list(itrack, 
-                  gtrack, 
-                  grtrack, 
-                  dtrack.450k), 
-             from = start_dmr_flanks, 
-             to = end_dmr_flanks, 
-             main = name,
-             cex.title = 0.9,
-             cex.axis = 1,
-             add53 = T,
-             add35 = T,
-             littleTicks = T)  
-  }
-
-  if(pdf){
-    dev.off()  
-  }
-  return(dmr_annotation = dmr.hg19.annotation.clean)
-}
-
 ```
 
 We initially read in the target/pheno files and perform the associated Quality Control using methylAid
@@ -470,7 +316,7 @@ fit.bin.eb <- eBayes(fit.bin)
 top.bin <- topTable(fit = fit.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
 top.bin <- cbind(top.bin, annotation.total[rownames(top.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(top.bin, "CD_HC_Age.csv")
-#ind_cpg_plotter(cpg_num = rownames(top.bin)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(top.bin)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #Check the P-value distribution
 require(rafalib)
@@ -565,7 +411,7 @@ abline(h = -log10(0.05), lty = 1)
 # cg11267810 #
 ##############
 
-ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest.bin)
+cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest.bin)
 cg11267810 <- Beta.culled["cg11267810",]
 names(cg11267810) <- pData(GMset.culled)$inclusionnr
 
@@ -634,17 +480,17 @@ fit.cont.eb <- eBayes(fit.cont)
 #CDREM relative to CDACT
 top.CDREM_CDACT <- topTable(fit.cont.eb, coef = 1, num = Inf, adjust.method = "BH")
 top.CDREM_CDACT <- cbind(top.CDREM_CDACT, annotation.total[rownames(top.CDREM_CDACT),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-ind_cpg_plotter(cpg_num = rownames(top.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
+cpg_dotboxplot(cpg_num = rownames(top.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #CDREM relative to HC
 top.CDREM_HC <- topTable(fit.cont.eb, coef = 2, num = Inf, adjust.method = "BH")
 top.CDREM_HC <- cbind(top.CDREM_HC, annotation.total[rownames(top.CDREM_HC),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-ind_cpg_plotter(cpg_num = rownames(top.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+cpg_dotboxplot(cpg_num = rownames(top.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #CDACT relative to HC
 top.CDACT_HC <- topTable(fit.cont.eb, coef = 3, num = Inf, adjust.method = "BH")
 top.CDACT_HC <- cbind(top.CDACT_HC, annotation.total[rownames(top.CDACT_HC),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-ind_cpg_plotter(cpg_num = rownames(top.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+cpg_dotboxplot(cpg_num = rownames(top.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 ########################
 # Age correction + SVA #
@@ -665,21 +511,21 @@ sva.fit2.eb <- eBayes(sva.fit2.cont)
 #CDREM relative to CDACT
 sva.top.CDREM_CDACT <- topTable(fit = sva.fit2.eb, coef = 1, number = Inf, adjust.method = "BH")
 sva.top.CDREM_CDACT <- cbind(sva.top.CDREM_CDACT, annotation.total[rownames(sva.top.CDREM_CDACT), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-#ind_cpg_plotter(cpg_num = rownames(sva.top.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(sva.top.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #CDREM relative to HC
 sva.top.CDREM_HC <- topTable(fit = sva.fit2.eb, coef = 2, number = Inf, adjust.method = "BH")
 sva.top.CDREM_HC <- cbind(sva.top.CDREM_HC, annotation.total[rownames(sva.top.CDREM_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-#ind_cpg_plotter(cpg_num = rownames(sva.top.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(sva.top.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #CDACT relative to HC
 sva.top.CDACT_HC <- topTable(fit = sva.fit2.eb, coef = 3, number = Inf, adjust.method = "BH")
 sva.top.CDACT_HC <- cbind(sva.top.CDACT_HC, annotation.total[rownames(sva.top.CDACT_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-#ind_cpg_plotter(cpg_num = rownames(sva.top.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(sva.top.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #cg08534055
-ind_cpg_plotter(cpg_num = "cg08534055", betas = Beta.culled, factor_interest = factor_interest)
-ind_cpg_plotter(cpg_num = "cg08534055", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+cpg_dotboxplot(cpg_num = "cg08534055", betas = Beta.culled, factor_interest = factor_interest)
+cpg_dotboxplot(cpg_num = "cg08534055", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 
 ```
 We find that no CpGs when comparing CDACT vs CDREM, CDREM vs HC or CDACT vs HC that are significant after BH-correction. When we look at the specific comparisons, there appear to be some differences, but they are probably not significant. Additionally, the effect size is very limited with the top CpG of CDACT-HC having an effect size of ~0.02. When comparing CDACT to HC, we find that cg08534055 (C16orf72) also ends up in the top 10. Visualization of the probe shows that 
@@ -764,7 +610,7 @@ fit.rmout.bin.eb <- eBayes(fit.rmout.bin)
 top.rmout.bin <- topTable(fit = fit.rmout.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
 top.rmout.bin <- cbind(top.rmout.bin, annotation.total[rownames(top.rmout.bin),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(top.rmout.bin, "CD_HC_Age.csv")
-#ind_cpg_plotter(cpg_num = rownames(top.rmout.bin)[1], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+#cpg_dotboxplot(cpg_num = rownames(top.rmout.bin)[1], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
 
 #Check the P-value distribution
 require(rafalib)
@@ -829,11 +675,21 @@ require(sva)
 sva.fit.rmout.bin <- sva(M.rmout, design.rmout.bin)
 sva.design.rmout.bin <- cbind(design.rmout.bin, sva.fit.rmout.bin$sv)
 
+#DMPs
 sva.fit2.rmout.bin <- lmFit(M.rmout, sva.design.rmout.bin)
 sva.fit2.rmout.bin.eb <- eBayes(sva.fit2.rmout.bin)
 sva.top.rmout.bin <- topTable(fit = sva.fit2.rmout.bin.eb, coef = 2, number = Inf, adjust.method = "BH")
 sva.top.rmout.bin <- cbind(sva.top.rmout.bin, annotation.total[rownames(sva.top.rmout.bin), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(sva.top.rmout.bin, "CD_HC_Age_SVA.csv")
+
+#############################
+# DMRs: Age corrected + SVA #
+#############################
+require(doParallel)
+require(pkgmaker)
+registerDoParallel(detectCores()-4)
+
+dmrs.rmout <- bumphunter(object = GMset.rmout, design = sva.design.rmout.bin, coef = 2, cutoff = 0.3, B = 100, nullMethod = "bootstrap")
 
 #Check the P-value distribution
 require(rafalib)
@@ -865,21 +721,21 @@ dir.create("CD_HC_SVA")
 write.csv(sva.sig.rmout, file = paste0(getwd(), "/CD_HC_SVA/HC1_out_HC_vs_CD_SVA.csv"))
 for(i in 1:nrow(sva.sig.rmout)){
   svg(filename = paste0(getwd(), "/CD_HC_SVA/", rownames(sva.sig.rmout)[i], ".svg"))
-  ind_cpg_plotter(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
-  #ind_cpg_plotter(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+  cpg_dotboxplot(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+  #cpg_dotboxplot(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
   dev.off()
 }
 ```
 Plotting revealed that cg13149147 does not confer any differential methylation, perhaps the outliers in the CD and HC group mess up the calculation. However cg11267810 and cg11664417 appear to be differential. In the next chunk we plotted them and stratified the plots based on the active or remissive state of CD Interestingly, this CpG has not been associated to any gene. 
 ```{r DMP: cg11267810, echo = F}
-ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest)
-ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
-ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest)
+cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 annotation.total["cg11267810",]
 
-ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.culled, factor_interest = factor_interest)
-ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
-ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+cpg_dotboxplot(cpg_num = "cg11664417", betas = Beta.culled, factor_interest = factor_interest)
+cpg_dotboxplot(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
+cpg_dotboxplot(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 annotation.total["cg11664417",]
 ```
 Stratifying the plots based on active or remissive CD, reveals that the outliers found in CD are located in CDACT and CDREM. The plots show that the CpG indeed appears to be differential in HC versus CD (both CDACT and CDREM). If we leave HC1 in there, it is quite obvious that this sample is a true outlier. Up to a certain extent HC6 does so as well.
@@ -910,19 +766,19 @@ fit.rmout.cont.eb <- eBayes(fit.rmout.cont)
 #CDREM relative to CDACT
 top.rmout.CDREM_CDACT <- topTable(fit.rmout.cont.eb, coef = 1, num = Inf, adjust.method = "BH")
 top.rmout.CDREM_CDACT <- cbind(top.rmout.CDREM_CDACT, annotation.total[rownames(top.rmout.CDREM_CDACT), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-#ind_cpg_plotter(cpg_num = rownames(top.rmout.CDREM_CDACT)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+#cpg_dotboxplot(cpg_num = rownames(top.rmout.CDREM_CDACT)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
 write.csv(top.rmout.CDREM_CDACT, "CDREM_CDACT_Age.csv")
 
 #CDREM relative to HC
 top.rmout.CDREM_HC <- topTable(fit.rmout.cont.eb, coef = 2, num = Inf, adjust.method = "BH")
 top.rmout.CDREM_HC <- cbind(top.rmout.CDREM_HC, annotation.total[rownames(top.rmout.CDREM_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-#ind_cpg_plotter(cpg_num = rownames(top.rmout.CDREM_HC)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+#cpg_dotboxplot(cpg_num = rownames(top.rmout.CDREM_HC)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
 write.csv(top.rmout.CDREM_HC, "CDREM_HC_Age.csv")
 
 #CDACT relative to HC
 top.rmout.CDACT_HC <- topTable(fit.rmout.cont.eb, coef = 3, num = Inf, adjust.method = "BH")
 top.rmout.CDACT_HC <- cbind(top.rmout.CDACT_HC, annotation.total[rownames(top.rmout.CDACT_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-#ind_cpg_plotter(cpg_num = rownames(top.rmout.CDACT_HC)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+#cpg_dotboxplot(cpg_num = rownames(top.rmout.CDACT_HC)[1], betas = Beta.rmout, factor_interest = factor_interest.rmout)
 write.csv(top.rmout.CDACT_HC, "CDACT_HC_Age.csv")
 
 ########################
@@ -945,32 +801,32 @@ sva.rmout.eb <- eBayes(sva.rmout.cont)
 sva.rmout.CDREM_CDACT <- topTable(fit = sva.rmout.eb, coef = 1, number = Inf, adjust.method = "BH")
 sva.rmout.CDREM_CDACT <- cbind(sva.rmout.CDREM_CDACT, annotation.total[rownames(sva.rmout.CDREM_CDACT), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(sva.rmout.CDREM_CDACT, "CDREM_CDACT_Age_SVA.csv")
-#ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(sva.rmout.CDREM_CDACT)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #CDREM relative to HC
 sva.rmout.CDREM_HC <- topTable(fit = sva.rmout.eb, coef = 2, number = Inf, adjust.method = "BH")
 sva.rmout.CDREM_HC <- cbind(sva.rmout.CDREM_HC, annotation.total[rownames(sva.rmout.CDREM_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(sva.rmout.CDREM_CDACT, "CDREM_HC_Age_SVA.csv")
-#ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(sva.rmout.CDREM_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 #CDACT relative to HC
 sva.rmout.CDACT_HC <- topTable(fit = sva.rmout.eb, coef = 3, number = Inf, adjust.method = "BH")
 sva.rmout.CDACT_HC <- cbind(sva.rmout.CDACT_HC, annotation.total[rownames(sva.rmout.CDACT_HC), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(sva.rmout.CDREM_CDACT, "CDACT_HC_Age_SVA.csv")
-#ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
+#cpg_dotboxplot(cpg_num = rownames(sva.rmout.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 ```
 Having a look at the non-SVA corrected contrast contrasts, CDACT vs HC yields cg17206772 as a putative candidate (note: it's BH-adjusted P-value was lower than 0.10, which is in contrast to the other contrasts that yield no significant results), with the effect size (Beta) being approximately 0.10. No gene has been associated to cg17206772 and the UCSC Genome Browser yields no results with regard to other epigenomic markers (i.e. DNase clusters, ChIP or H3K27Ac). Aside from this single CpG, none of the other contrasts yield any significant hits (not even after SVA correction).
 
 ```{r cg17206772, echo = F}
-ind_cpg_plotter(cpg_num = "cg17206772", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+cpg_dotboxplot(cpg_num = "cg17206772", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 
 ```
 
 Can we find any overlap within the top10 significant DMPs between CDACTvHC, CDREMvHC
 ```{r top10 significant DMPs CDACTvCDREM, CDREMvHC}
 sva.rmout.CDACT_HC[which(rownames(sva.rmout.CDACT_HC[1:10,]) %in% rownames(sva.rmout.CDREM_HC[1:10,])),]
-ind_cpg_plotter(cpg_num = "cg16921727", betas = Beta.rmout, factor_interest = factor_interest.rmout)
+cpg_dotboxplot(cpg_num = "cg16921727", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 
 ```
 
@@ -1011,7 +867,7 @@ write.csv(hypdriv.sig, "hypdriv_sig.csv")
 
 for(i in 1:nrow(hypdriv.sig)){
   svg(filename = paste0(i, ".", rownames(hypdriv.sig)[i], ".svg"))
-  ind_cpg_plotter(cpg_num = rownames(hypdriv.sig)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+  cpg_dotboxplot(cpg_num = rownames(hypdriv.sig)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
   dev.off()
 }
 
@@ -1022,9 +878,9 @@ For CD vs HC, we see some difference between CD and HCs that were deemed signifi
 In the following chunk we sought to assess whether we can find the DMRs as found in the Crohn Whole Blood 2013 cohort.
 ```{r Crohn Whole Blood 2013, echo = F}
 #HLA-J
-dmr_plotter(name = "HLA-J", chr = "chr6", betas = Beta.rmout, sample_names = pData(GMset.rmout)$inclusionnr, annotation.gr = annotation.culled.gr, pheno = factor_interest.rmout, start_dmr = 29895175, end_dmr = 29895260, simplified = T)
+dmr_genomeplot(name = "HLA-J", chr = "chr6", betas = Beta.rmout, annotation.gr = annotation.culled.gr, factor_interest = factor_interest.rmout, start_dmr = 29895175, end_dmr = 29895260)
 #MOV10L1
-dmr_plotter(name = "MOV10L1", chr = "chr22", betas = Beta.rmout, sample_names = pData(GMset.rmout)$inclusionnr, annotation.gr = annotation.culled.gr, pheno = factor_interest.rmout, start_dmr = 50528213, end_dmr = 50528312, simplified = T)
+dmr_genomeplot(name = "MOV10L1", chr = "chr22", betas = Beta.rmout, annotation.gr = annotation.culled.gr, factor_interest = factor_interest.rmout, start_dmr = 50528213, end_dmr = 50528312)
 
 ```
 
@@ -1070,13 +926,13 @@ sig.CD.ACT.top <- CD.ACT.top[which(CD.ACT.top$adj.P.Val < 0.05),]
 #In case only the CDs are compared
 for(i in 1:nrow(sig.CD.ACT.top)){
   svg(filename = paste0(i, ".", rownames(sig.CD.ACT.top)[i], ".svg"))
-  ind_cpg_plotter(cpg_num = rownames(sig.CD.ACT.top)[i], betas = Beta.CD, factor_interest = CD.state)
+  cpg_dotboxplot(cpg_num = rownames(sig.CD.ACT.top)[i], betas = Beta.CD, factor_interest = CD.state)
   dev.off()
 }
 #In case the HCs should be added
 for(i in 1:nrow(sig.CD.ACT.top)){
   svg(filename = paste0(i, ".", rownames(sig.CD.ACT.top)[i], ".svg"))
-  ind_cpg_plotter(cpg_num = rownames(sig.CD.ACT.top)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+  cpg_dotboxplot(cpg_num = rownames(sig.CD.ACT.top)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
   dev.off()
 }
 
@@ -1089,7 +945,7 @@ sig.CD.aTNF.top <- CD.aTNF.top[which(CD.aTNF.top$adj.P.Val < 0.05),]
 #In case only the CDs are compared
 for(i in 1:nrow(sig.CD.aTNF.top)){
   svg(filename = paste0(i, ".", rownames(sig.CD.aTNF.top)[i], ".svg"))
-  ind_cpg_plotter(cpg_num = rownames(sig.CD.aTNF.top)[i], betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+  cpg_dotboxplot(cpg_num = rownames(sig.CD.aTNF.top)[i], betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
   dev.off()
 }
 
@@ -1120,7 +976,7 @@ strat.HC.CD.aTNF <- paste0(factor_interest.rmout, ".", factor_aTNF)
 
 for(i in 1:nrow(sig.CD.ACTaTNF.top)){
   svg(filename = paste0(i, ".", rownames(sig.CD.ACTaTNF.top)[i], ".svg"))
-  ind_cpg_plotter(cpg_num = rownames(sig.CD.ACTaTNF.top)[i], betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
+  cpg_dotboxplot(cpg_num = rownames(sig.CD.ACTaTNF.top)[i], betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
   dev.off()
 }
 ```
@@ -1172,7 +1028,7 @@ write.csv(x = top.TNF, file = "top.aTNF.csv")
 
 for(i in 1:20){
   svg(filename = paste0(i, ".", rownames(top.TNF)[i]))
-  ind_cpg_plotter(cpg_num = rownames(top.TNF)[i], betas = Beta.CD, factor_interest = CD.aTNF)
+  cpg_dotboxplot(cpg_num = rownames(top.TNF)[i], betas = Beta.CD, factor_interest = CD.aTNF)
   dev.off()
 }
 
