@@ -587,8 +587,121 @@ legend.cols <- c(unique(cols), rep("black", length(unique(pchs))))
 legend("topright", legend = legend.labels, pch = legend.pchs, col = legend.cols)
 dev.off()
 
+#ggplot
+PCA.df <- data.frame(PC1 = M.rmout.svd$v[,1], PC2 = M.rmout.svd$v[,2], Cohort = factor_interest.rmout, Age = as.factor(round(pData(GMset.rmout)$AGE/10)*10))
+
+Cairo(file = "PC1_PC2.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+ggplot(PCA.df, aes(x = PC1, y = PC2, color = Cohort, shape = Cohort)) + 
+  geom_point(size = 4) +
+  theme_bw() +
+  ggtitle("PC1 vs PC2") +
+  xlim(-0.75, 0.75) +
+  ylim(-0.75, 0.75) +
+  ylab("PC2") +
+  xlab("PC1") +
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.position = "bottom")
+dev.off()
+
+#ICHG2016
+Cairo(file = "PC1_PC2.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+ggplot(PCA.df, aes(x = PC1, y = PC2, color = Cohort, shape = Cohort)) + 
+  geom_point(size = 6) +
+  theme_bw() +
+  ggtitle("Monocytes: Principal Component Analysis") +
+  ylab("PC2") +
+  xlab("PC1") +
+  theme(axis.text = element_text(size = 17), 
+        axis.title = element_text(size = 17, face = "bold"),
+        plot.title = element_text(size = 17, face = "bold"),
+        legend.title = element_text(size = 17),
+        legend.text = element_text(size = 17),
+        legend.position = "bottom")
+dev.off()
+
+PCA.df.bin <- PCA.df
+factor_interest.bin.ichg2016 <- as.character(factor_interest.bin.rmout)
+factor_interest.bin.ichg2016[grep("HC", factor_interest.bin.ichg2016)] <- "Control"
+PCA.df.bin$Cohort <- as.factor(factor_interest.bin.ichg2016)
+
+Cairo(file = "PC1_PC2.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+ggplot(PCA.df.bin, aes(x = PC1, y = PC2, color = Cohort, shape = Cohort)) + 
+  geom_point(size = 6) +
+  theme_bw() +
+  ggtitle("Monocytes: Principal Component Analysis") +
+  ylab("PC2") +
+  xlab("PC1") +
+  theme(axis.text = element_text(size = 17), 
+        axis.title = element_text(size = 17, face = "bold"),
+        plot.title = element_text(size = 17, face = "bold"),
+        legend.title = element_text(size = 17),
+        legend.text = element_text(size = 17),
+        legend.position = "bottom")
+dev.off()
+
+#Variance per PC
+require(reshape)
+y0 <- matrix(rnorm(nrow(M.rmout)*ncol(M.rmout)), nrow(M.rmout), ncol(M.rmout))
+d0 <- svd(y0)$d
+
+var_per_PC <- data.frame(Random_data = (d0^2/sum(d0^2)), Our_data = (M.rmout.svd$d^2/sum(M.rmout.svd$d^2)))
+var_per_PC.melt <- melt(var_per_PC)
+var_per_PC.melt <- cbind(var_per_PC.melt, rep(c(1:length(M.rmout.svd$d)), 2))
+colnames(var_per_PC.melt) <- c("Data", "Variance", "PC")
+
+Cairo(file = "Variance_per_PC.svg", type = "svg", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+ggplot(var_per_PC.melt, aes(x = PC, y = Variance, ymax = 0.15, color = Data, shape = Data)) + 
+  geom_point(size = 3) +
+  theme_bw() +
+  ggtitle("Variance explained per PC") +
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14),
+        legend.title = element_text(size = 14),
+        legend.text = element_text(size = 12)) +
+  scale_fill_discrete(breaks = c("Random", "HM450k"),
+                      labels = c("Random", "450k"))
+dev.off()
+
 #CDREM outlier
 pData(GMset.rmout)[which(M.rmout.svd$v[,2] == max(M.rmout.svd$v[,2])),]
+
+
+#aTNF usage
+
+atnfcorr <- sapply(1:ncol(M.rmout.svd$v), function(i){
+  fit <- lm(M.rmout.svd$v[,i]~factor_aTNF)
+  r_squared <- summary(fit)$adj.r.squared
+  p_value <- pf(summary(fit)$fstatistic[1], summary(fit)$fstatistic[2], summary(fit)$fstatistic[3], lower.tail = F)
+  return(data.frame(r_squared = r_squared, p_value = p_value))
+})
+rsq.atnf <- unlist(t(atnfcorr))[1:ncol(M.rmout.svd$v)]
+pval.atnf <- unlist(t(atnfcorr))[(1:ncol(M.rmout.svd$v))+ncol(M.rmout.svd$v)]
+sig.atnf <- pval.atnf < 0.05
+sig.atnf[which(sig.atnf == T)] <- "Significant"
+sig.atnf[which(sig.atnf == F)] <- "Non-significant"
+
+atnf.corr.df <- data.frame(Correlation = rsq.atnf, Pval = pval.atnf, PC = 1:length(atnfcorr))
+atnf.corr.df$padj <- p.adjust(p = atnf.corr.df$Pval, method = "BH")
+
+atnf.corr.df$Significance <- (atnf.corr.df$padj < 0.05)*1
+atnf.corr.df$Significance[which(atnf.corr.df$Significance == 1)] <- "Significant"
+atnf.corr.df$Significance[which(atnf.corr.df$Significance == 0)] <- "Non-significant"
+atnf.corr.df$Significance <- factor(atnf.corr.df$Significance)
+
+Cairo(file = "Correlation_aTNF_per_PC.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
+ggplot(atnf.corr.df, aes(x = PC, y = Correlation, ymax = 1)) + 
+  geom_point(size = 3, aes(fill = Significance)) +
+  theme_bw() +
+  ggtitle("Correlation: aTNF per PC") +
+  ylab(expression(R^2)) +
+  theme(axis.text = element_text(size = 12), 
+        axis.title = element_text(size = 14),
+        legend.position="none")
+dev.off()
+
 ```
 From the PCA plot we can see that HC6 is still an outlier on PC1, interestingly, CDACT1b appears to distance itself in PC2 as well. Side-thought: Perhaps I might have to rerun the script removing HC6 as well. 
 
@@ -728,6 +841,27 @@ ggplot(volplot, aes(x = Coef_Beta, y = -log10(Padj), color = threshold)) +
         legend.title = element_blank(),
         legend.position = "bottom")
 dev.off()
+
+#ICHG2016
+Cairo(file = "dmps_CDvHC_sva_volcanoBeta_enlarged_ggplot.pdf", type = "pdf", units = "px", width = 700, height = 700, dpi = 90, bg = "white")
+ggplot(volplot, aes(x = Coef_Beta, y = -log10(Padj), color = threshold)) + 
+  geom_point(alpha = 0.4, size = 1) +
+  geom_hline(yintercept = -log10(0.05), linetype = "longdash") +
+  theme_bw() +
+  ggtitle("Monocytes") +
+  xlim(c(-0.5, 0.5)) +
+  ylab("-log10(P.adj)") +
+  xlab("Mean effect size (Beta)") +
+  scale_color_brewer(palette = "Dark2") +
+  guides(colour = guide_legend(override.aes = list(size = 10))) +
+  theme(axis.text = element_text(size = 17), 
+        axis.title = element_text(size = 17, face = "bold"),
+        plot.title = element_text(size = 17, face = "bold"),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 17),
+        legend.position = "bottom")
+dev.off()
+
 ```
 Similar as when HC1 was left in, only SVA generates a significant hit, namely cg11267810. In addition to this significant hit, we report two more almost significant hits: cg13149147 and cg11664417 with an adjusted P-value of 0.07134581. 
 
@@ -751,6 +885,12 @@ cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = fa
 Cairo(file = "CDvHC_cg11267810.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
 cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
 dev.off()
+
+#ICHG2016
+Cairo(file = "CDvHC_cg11267810.pdf", type = "pdf", units = "px", width = 700, height = 700, dpi = 90, bg = "white")
+cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.ichg2016, title = "RIN2 (cg11267810)")
+dev.off()
+
 
 Cairo(file = "CDvHC_cg11267810.pdf", type = "pdf", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
 cpg_dotboxplot(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.rmout)
