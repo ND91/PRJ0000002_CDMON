@@ -120,20 +120,140 @@ ind_cpg_plotter <- function(cpg_num, betas, factor_interest, gg.plot = T){
       geom_boxplot(aes(fill = cohort), outlier.colour = NA) + 
       geom_jitter(size = 3, aes(shape = cohort)) + 
       theme_bw() + 
-      xlab("")
+      xlab("") + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
     large_plot <- ggplot(data = beta.df, aes(x = cohort, y = beta)) + 
       geom_boxplot(aes(fill = cohort), outlier.colour = NA) + 
       geom_jitter(size = 3, aes(shape = cohort)) + 
       theme_bw() + 
       ggtitle("Enlarged") + 
       theme(legend.position = "none") + 
-      xlab("")
+      xlab("") + 
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
     grid.arrange(small_plot, large_plot, ncol = 2, top = cpg_num)
   } else{
     boxplot(beta~cohort, data = beta.df, main = cpg_num, ylim = c(0,1), ylab = "Beta")
     stripchart(beta~cohort, data = beta.df, vertical = T, method = "jitter", pch = 16, add = T, col = "blue")
   }
 }
+
+#dmr_plotter is a function which plots the regions of interest within a region frame
+dmr_plotter <- function(name, chr, betas, sample_names, annotation.gr, pheno, start_dmr, end_dmr, simplified = T, flanks = 1000, genome_version = "hg19", pdf = F){
+  require(Gviz)
+  require(GenomicRanges)
+  
+  #Check DMR
+  dmr.hg19.annotation <- annotation.gr[which(seqnames(annotation.gr) == chr),]
+  dmr.hg19.annotation <- dmr.hg19.annotation[which(start(dmr.hg19.annotation) >= start_dmr & start(dmr.hg19.annotation) <= end_dmr),]
+  dmr.hg19.annotation.clean <- dmr.hg19.annotation
+  print(dmr.hg19.annotation.clean)
+  
+  if(simplified == F){
+    #DMR track
+    dmrtrack <- AnnotationTrack(start = start_dmr, end = end_dmr, name = "DMR", chromosome = chr, genome = genome_version)
+    #DMP track
+    dmp.hg19.annotation <- dmr.hg19.annotation
+  
+    #Add the G and direction of each CpG
+    start(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "-"]) <- start(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "-"])-1
+    end(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "+"]) <- end(dmp.hg19.annotation[strand(dmp.hg19.annotation) == "+"])+1
+    dmptrack <- AnnotationTrack(dmp.hg19.annotation, name = "DMP", col = dmp.hg19.annotation$red_end)
+  }
+  
+  #Add flanks
+  start_dmr_flanks <- start_dmr-flanks
+  end_dmr_flanks <- end_dmr+flanks
+  dmr.hg19.annotation <- annotation.gr[which(seqnames(annotation.gr) == chr),]
+  dmr.hg19.annotation <- dmr.hg19.annotation[which(start(dmr.hg19.annotation) >= start_dmr_flanks & start(dmr.hg19.annotation) <= end_dmr_flanks),]
+  
+  #Betas
+  GMset.beta <- betas
+  dmr.450k <- data.frame(seqnames = as.character(seqnames(dmr.hg19.annotation)), pos = start(dmr.hg19.annotation), GMset.beta[names(dmr.hg19.annotation),])
+  colnames(dmr.450k) <- c("seqnames", "pos", sample_names)
+  dmr.450k.gr <- makeGRangesFromDataFrame(df = dmr.450k, keep.extra.columns = T, start.field = "pos", end.field = "pos")
+  
+  #Plot
+  gtrack <- GenomeAxisTrack()
+  itrack <- IdeogramTrack(genome = genome_version, chromosome = chr)
+  grtrack <- UcscTrack(track = "RefSeq Genes", 
+                       table = "refGene", 
+                       trackType = "GeneRegionTrack", 
+                       chromosome = chr, 
+                       genome = genome_version, 
+                       rstart = "exonStarts", 
+                       rends = "exonEnds", 
+                       symbol = "name2", 
+                       strand = "strand", 
+                       shape = "arrow", 
+                       transcriptAnnotation = "symbol", 
+                       name = "RefSeq Genes", 
+                       showId = T, 
+                       from = start_dmr_flanks, 
+                       to = end_dmr_flanks, 
+                       fill = "#8282d2")
+
+  #SNP track
+  if(simplified == F){
+    snptrack <- UcscTrack(genome = genome_version, 
+                        chromosome = chr, 
+                        track = "Common SNPs(141)", 
+                        from = start_dmr_flanks, 
+                        to = end_dmr_flanks, 
+                        trackType = "AnnotationTrack", 
+                        start = "chromStart", 
+                        end = "chromEnd", 
+                        gene = "name", 
+                        feature = "func", 
+                        strand = "strand", 
+                        shape = "box",
+                        stacking = "dense",
+                        fill = "black", 
+                        name = "SNPs")
+  }
+  dtrack.450k <- DataTrack(range = dmr.450k.gr, name = "450K", ylim = c(0,1), groups = as.factor(pheno), type = c("a", "p", "g"), legend = TRUE)
+ 
+  if(pdf){
+    pdf(file = paste0(getwd(), "/", name, ".pdf"))
+  }
+  
+  if(simplified == F){
+    plotTracks(list(itrack, 
+                  gtrack, 
+                  grtrack, 
+                  dtrack.450k, 
+                  dmrtrack, 
+                  dmptrack, 
+                  snptrack), 
+             from = start_dmr_flanks, 
+             to = end_dmr_flanks, 
+             main = name,
+             cex.title = 0.9,
+             cex.axis = 1,
+             add53 = T,
+             add35 = T,
+             littleTicks = T)  
+  } else{
+        plotTracks(list(itrack, 
+                  gtrack, 
+                  grtrack, 
+                  dtrack.450k), 
+             from = start_dmr_flanks, 
+             to = end_dmr_flanks, 
+             main = name,
+             cex.title = 0.9,
+             cex.axis = 1,
+             add53 = T,
+             add35 = T,
+             littleTicks = T)  
+  }
+
+  if(pdf){
+    dev.off()  
+  }
+  return(dmr_annotation = dmr.hg19.annotation.clean)
+}
+
 ```
 
 We initially read in the target/pheno files and perform the associated Quality Control using methylAid
@@ -580,8 +700,10 @@ GMset.rmout <- GMset.culled[,-which(pData(GMset.culled)$inclusionnr == "HC1")]
 Beta.rmout <- getBeta(GMset.rmout)
 M.rmout <- getM(GMset.rmout)
 
-factor_interest.rmout <- factor_interest[-out.index]
-factor_interest.bin.rmout <- factor_interest.bin[-out.index]
+factor_interest.rmout <- as.factor(factor_interest[-out.index])
+factor_interest.rmout <- relevel(factor_interest.rmout, ref = "HC")
+factor_interest.bin.rmout <- as.factor(factor_interest.bin[-out.index])
+factor_interest.bin.rmout <- relevel(factor_interest.bin.rmout, ref = "HC")
 ```
 
 Here we perform some quality checks to see whether what the PCA/MDS looks like post-removal of the outlier
@@ -733,32 +855,34 @@ if(-log10(0.05) > range(-log10(volplot$Padj))[2]+1){
 plot(x = volplot$Coef, y = -log10(volplot$Padj), cex = 0.8, pch = 21, bg = "red", main = "Volcano Plot", xlab = "Effect size (M)", ylab = "-log10(P.adj)", ylim = y.lim, xlim = x.lim)
 abline(h = -log10(0.05), lty = 1)
 ```
-Similar as when HC1 was left in, only SVA generates a significant hit, namely cg11267810. Plotting the CpG cg11267810 shows an interesting DMP, which is unfortunately still not significant at \alpha = 0.05. While the effect size is decent-ish (beta ~ 0.10), there appears to be some overlap between CD and HC, where the two lowest methylated CpGs CD fall within the distribution of the HCs. Similarly, the highest methylated HC falls overlaps with the median of CD. The unequal sampling of CD (17) versus HC (7) does not help either. 
+Similar as when HC1 was left in, only SVA generates a significant hit, namely cg11267810. In addition to this significant hit, we report two more almost significant hits: cg13149147 and cg11664417 with an adjusted P-value of 0.07134581. 
 
+In the following chunk we plot the CpG cg11267810 shows an interesting DMP, which is unfortunately still not significant at \alpha = 0.05. While the effect size is decent-ish (beta ~ 0.10), there appears to be some overlap between CD and HC, where the two lowest methylated CpGs CD fall within the distribution of the HCs. Similarly, the highest methylated HC falls overlaps with the median of CD. The unequal sampling of CD (17) versus HC (7) does not help either. 
 ```{r HC1-out: CD vs HC SVA, echo = F}
 #All significant CpGs
-sva.sig.rmout <- sva.top.rmout.bin[which(sva.top.rmout.bin$adj.P.Val < 0.05),]
+sva.sig.rmout <- sva.top.rmout.bin[which(sva.top.rmout.bin$adj.P.Val < 0.10),]
 dir.create("CD_HC_SVA")
 write.csv(sva.sig.rmout, file = paste0(getwd(), "/CD_HC_SVA/HC1_out_HC_vs_CD_SVA.csv"))
 for(i in 1:nrow(sva.sig.rmout)){
-  svg(filename = paste0(getwd(), "/CD_HC_SVA/", rownames(sva.sig.rmout)[i]))
+  svg(filename = paste0(getwd(), "/CD_HC_SVA/", rownames(sva.sig.rmout)[i], ".svg"))
   ind_cpg_plotter(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
   #ind_cpg_plotter(cpg_num = rownames(sva.sig.rmout)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
   dev.off()
 }
 ```
-
-One hit that was significant in the SVA analysis of the all samples and is still significant when removing HC1 is cg11267810. Interestingly, this CpG has not been associated to any gene. Another hit that was interesting was cg11664417, but two outliers in CD and HC confounds the data. 
+Plotting revealed that cg13149147 does not confer any differential methylation, perhaps the outliers in the CD and HC group mess up the calculation. However cg11267810 and cg11664417 appear to be differential. In the next chunk we plotted them and stratified the plots based on the active or remissive state of CD Interestingly, this CpG has not been associated to any gene. 
 ```{r DMP: cg11267810, echo = F}
+ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.culled, factor_interest = factor_interest)
 ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
 ind_cpg_plotter(cpg_num = "cg11267810", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 annotation.total["cg11267810",]
 
+ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.culled, factor_interest = factor_interest)
 ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.bin.rmout)
 ind_cpg_plotter(cpg_num = "cg11664417", betas = Beta.rmout, factor_interest = factor_interest.rmout)
 annotation.total["cg11664417",]
 ```
-Stratifying the plots based on active or remissive CD, reveals that the outliers found in CD are located in CDACT and CDREM. The plots show that the CpG indeed appears to be differential in HC versus CD (both CDACT and CDREM).
+Stratifying the plots based on active or remissive CD, reveals that the outliers found in CD are located in CDACT and CDREM. The plots show that the CpG indeed appears to be differential in HC versus CD (both CDACT and CDREM). If we leave HC1 in there, it is quite obvious that this sample is a true outlier. Up to a certain extent HC6 does so as well.
 
 #############
 # Contrasts #
@@ -836,7 +960,7 @@ write.csv(sva.rmout.CDREM_CDACT, "CDACT_HC_Age_SVA.csv")
 #ind_cpg_plotter(cpg_num = rownames(sva.rmout.CDACT_HC)[1], betas = Beta.culled, factor_interest = factor_interest)
 
 ```
-Having a look at the non-SVA corrected contrast contrasts, CDACT vs HC yields cg17206772 as a putative candidate (note: it's BH-adjusted P-value was lower than 0.10, which is in contrast to the other contrasts that yield nothing), with the effect size (Beta) being approximately 0.10. No gene has been associated to cg17206772 and the UCSC Genome Browser yields no results with regard to other epigenomic markers (i.e. DNase clusters, ChIP or H3K27Ac). Aside from this single CpG, none of the other contrasts yield any significant hits (not even after SVA correction).
+Having a look at the non-SVA corrected contrast contrasts, CDACT vs HC yields cg17206772 as a putative candidate (note: it's BH-adjusted P-value was lower than 0.10, which is in contrast to the other contrasts that yield no significant results), with the effect size (Beta) being approximately 0.10. No gene has been associated to cg17206772 and the UCSC Genome Browser yields no results with regard to other epigenomic markers (i.e. DNase clusters, ChIP or H3K27Ac). Aside from this single CpG, none of the other contrasts yield any significant hits (not even after SVA correction).
 
 ```{r cg17206772, echo = F}
 ind_cpg_plotter(cpg_num = "cg17206772", betas = Beta.rmout, factor_interest = factor_interest.rmout)
@@ -886,15 +1010,24 @@ hypdriv.sig <- hypdriv.df[which(hypdriv.df$BH_P_value_hypdriv < 0.05),]
 write.csv(hypdriv.sig, "hypdriv_sig.csv")
 
 for(i in 1:nrow(hypdriv.sig)){
-  svg(filename = paste0(i, ".", rownames(hypdriv.sig)[i]))
+  svg(filename = paste0(i, ".", rownames(hypdriv.sig)[i], ".svg"))
   ind_cpg_plotter(cpg_num = rownames(hypdriv.sig)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
   dev.off()
 }
 
 ```
 For CD vs HC, we see some difference between CD and HCs that were deemed significant after multiple testing correction on our smaller dataset. In general the direction of change corresponds to the findings by McDermott et al. 2015. What is striking however is that CDREM appears to display a somewhat bimodal distribution, with three CDREM samples constantly falling within the region of HC. Could it be that CDREM acts as some kind of intermediate state between CDACT and HC?
+  As was expected, no significant hits were found in the IBDACT vs IBDREM cohort as neither McDermott's nor our comparisons were significant.
 
-As was expected, no significant hits were found in the IBDACT vs IBDREM cohort as neither McDermott's nor our comparisons were significant.
+In the following chunk we sought to assess whether we can find the DMRs as found in the Crohn Whole Blood 2013 cohort.
+```{r Crohn Whole Blood 2013, echo = F}
+#HLA-J
+dmr_plotter(name = "HLA-J", chr = "chr6", betas = Beta.rmout, sample_names = pData(GMset.rmout)$inclusionnr, annotation.gr = annotation.culled.gr, pheno = factor_interest.rmout, start_dmr = 29895175, end_dmr = 29895260, simplified = T)
+#MOV10L1
+dmr_plotter(name = "MOV10L1", chr = "chr22", betas = Beta.rmout, sample_names = pData(GMset.rmout)$inclusionnr, annotation.gr = annotation.culled.gr, pheno = factor_interest.rmout, start_dmr = 50528213, end_dmr = 50528312, simplified = T)
+
+```
+
 
 ##############
 # aTNF usage #
@@ -925,41 +1058,104 @@ CD.aTNF <- relevel(x = as.factor(pheno.CD$medicationrelevant), ref = "None")
 
 design.CD <- model.matrix(~CD.state + CD.aTNF + CD.state:CD.aTNF)
 colnames(design.CD) <- c("(Intercept)", "Active", "aTNF", "Active:aTNF")
-
-#CD: ACT vs REM
 fit.CD <- lmFit(object = M.CD, design = design.CD)
 fit.CD.eb <- eBayes(fit.CD)
+
+#CD: ACT vs REM
 CD.ACT.top <- topTable(fit = fit.CD.eb, coef = 2, number = "Inf")
 CD.ACT.top <- cbind(CD.ACT.top, annotation.culled[rownames(CD.ACT.top), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(CD.ACT.top, "CD.ACT.top.csv")
-ind_cpg_plotter("cg25721040", betas = Beta.CD, factor_interest = CD.state)
-ind_cpg_plotter("cg13885357", betas = Beta.CD, factor_interest = CD.state)
+sig.CD.ACT.top <- CD.ACT.top[which(CD.ACT.top$adj.P.Val < 0.05),]
+
+#In case only the CDs are compared
+for(i in 1:nrow(sig.CD.ACT.top)){
+  svg(filename = paste0(i, ".", rownames(sig.CD.ACT.top)[i], ".svg"))
+  ind_cpg_plotter(cpg_num = rownames(sig.CD.ACT.top)[i], betas = Beta.CD, factor_interest = CD.state)
+  dev.off()
+}
+#In case the HCs should be added
+for(i in 1:nrow(sig.CD.ACT.top)){
+  svg(filename = paste0(i, ".", rownames(sig.CD.ACT.top)[i], ".svg"))
+  ind_cpg_plotter(cpg_num = rownames(sig.CD.ACT.top)[i], betas = Beta.rmout, factor_interest = factor_interest.rmout)
+  dev.off()
+}
 
 #CD: aTNF vs non-aTNF
 CD.aTNF.top <- topTable(fit = fit.CD.eb, coef = 3, number = "Inf")
 CD.aTNF.top <- cbind(CD.aTNF.top, annotation.culled[rownames(CD.aTNF.top), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(CD.aTNF.top, "CD.aTNF.top.csv")
-ind_cpg_plotter(cpg_num = "cg25721040", betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
-ind_cpg_plotter(cpg_num = "cg13885357", betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+sig.CD.aTNF.top <- CD.aTNF.top[which(CD.aTNF.top$adj.P.Val < 0.05),]
+
+#In case only the CDs are compared
+for(i in 1:nrow(sig.CD.aTNF.top)){
+  svg(filename = paste0(i, ".", rownames(sig.CD.aTNF.top)[i], ".svg"))
+  ind_cpg_plotter(cpg_num = rownames(sig.CD.aTNF.top)[i], betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+  dev.off()
+}
+
+top.aTNF.beta <- Beta.CD[c("cg25721040", "cg13885357"),]
+colnames(top.aTNF.beta) <- pheno.CD$inclusionnr
 
 #CD: interaction ACT vs REM and aTNF vs non-aTNF
 CD.ACTaTNF.top <- topTable(fit = fit.CD.eb, coef = 4, number = "Inf")
 CD.ACTaTNF.top <- cbind(CD.ACTaTNF.top, annotation.culled[rownames(CD.ACTaTNF.top), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
 write.csv(CD.ACTaTNF.top, "CD.ACTaTNF.top.csv")
-ind_cpg_plotter(cpg_num = "cg09175811", betas = Beta.CD, factor_interest = pheno.CD$INCLgroup)
-ind_cpg_plotter(cpg_num = "cg09175811", betas = Beta.CD, factor_interest = pheno.CD$medicationrelevant)
+sig.CD.ACTaTNF.top <- CD.ACTaTNF.top[which(CD.ACTaTNF.top$adj.P.Val < 0.05),]
 
-top.CD.aTNF.beta <- Beta.CD[c("cg25721040", "cg13885357", "cg09175811"),]
+top.CD.aTNF.beta <- Beta.CD[rownames(sig.CD.ACTaTNF.top),]
 colnames(top.CD.aTNF.beta) <- pheno.CD$inclusionnr
+```
+There appear to be some significant hits, but closer analysis using the dotboxplot shows that the means are driven by several outliers, namely CDREM-5 and CDREM-8 and CDACT-7 and CDACT-2. Ignoring these outliers yields comparable betas with hardly any significant difference.
+  No clear correlation could be found between CDREM-5 and CDREM-8. Hierarchical clustering had not clustered them together. Interestingly however, they are the two only CDREM samples that have not taken aTNF (no medication information about CDREM-5, but it appears as though CDREM-8 had taken thiopurine, as described in the phenodata). Similarly, CDACT-7 and CDACT-2 are the only CDACT samples that were on aTNF when their blood was drawn. If we were to stratify the plots based on aTNF usage and CDACT and CDREM, we get the following pictures obtained from the interaction term between ACT and aTNF:
+```{r CDACT.aTNF vs CDREM.aTNF vs CDACT.nonaTNF vs CDREM.nonaTNF, echo = F}
+#CD alone
+strat.CD.aTNF <- paste0(pheno.CD$INCLgroup, ".", pheno.CD$medicationrelevant)
+  
+#Total picture (with HC)
+factor_aTNF <- pData(GMset.rmout)$medicationrelevant
+factor_aTNF[grep("TNF", factor_aTNF)] <- "aTNF"
+factor_aTNF[-grep("TNF", factor_aTNF)] <- "None"
+factor_aTNF <- relevel(as.factor(factor_aTNF), ref = "None")
+strat.HC.CD.aTNF <- paste0(factor_interest.rmout, ".", factor_aTNF)
+
+for(i in 1:nrow(sig.CD.ACTaTNF.top)){
+  svg(filename = paste0(i, ".", rownames(sig.CD.ACTaTNF.top)[i], ".svg"))
+  ind_cpg_plotter(cpg_num = rownames(sig.CD.ACTaTNF.top)[i], betas = Beta.rmout, factor_interest = strat.HC.CD.aTNF)
+  dev.off()
+}
+```
+Here we observe that aTNF treatment (or the lack thereof) results in significant differential methylation as compared to their opposite within the same group (CDACT or CDREM). Some of these DMPs appear to fall at a methylation level of 0.5, which would indicate that perhaps a SNP underlie these CpGs, however analysis of these CpGs using the UCSC genome browser yields no result for a SNP whatsoever. Keep in mind that the results we observe here require validation in an own study as our aTNF-defiants are in limited numbers (n=2). 
+  Biologically speaking the observed phenotype is rather confusing, why would aTNF usage when CDACT (or the absence of aTNF usage when CDREM) confer the methylation pattern? Could it be that deviants of CDACT and CDREM simply behave differently and that it has nothing to do with the aTNF usage, but rather the patient itself? 
+  In the next chunk we sought to elucidate the biological functions of the significant DMPs using GO-enrichment
+```{r GO enrichment ACT aTNF, echo = F}
+require(BiasedUrn)
+require(missMethyl)
+require(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+go.CD.ACTaTNF <- gometh(sig.cpg = rownames(sig.CD.ACTaTNF.top), all.cpg = rownames(annotation.culled), plot.bias = T, prior.prob = T)
+go.sig.CD.ACTaTNF <- go.CD.ACTaTNF[go.CD.ACTaTNF$FDR < 0.05,]
+```
+We see however that no GO-terms are significantly enriched after correcting for multiple testing (BH-adjusted P). Analysis on a case by case basis 
+
+What if we colour our PCA based on the stratification we built previously?
+```{r PCA per group, echo = F}
+require(rafalib)
+
+#PCA
+cols <- as.fumeric(strat.HC.CD.aTNF)
+mypar(1,1)
+plot(M.rmout.svd$v[,1], M.rmout.svd$v[,2], col = cols, pch = 16, xlab = "PC1", ylab = "PC2")
+legend("topright", legend = unique(strat.HC.CD.aTNF), pch = 16, col = unique(cols))
+
+#Hierarchical Clustering
+myplclust(hc.M.rmout, labels = pData(GMset.rmout)$inclusionnr, lab.col = as.fumeric(strat.HC.CD.aTNF))
+legend("topright", legend = unique(strat.HC.CD.aTNF), pch = 16, col = as.fumeric(unique(strat.HC.CD.aTNF)))
 
 ```
-There appear to be some significant hits, but closer analysis using the dotboxplot shows that the means are driven by two outliers, for ACT vs REM and aTNF vs non-aTNF the outliers appear to be CDREM-5 and CDREM-8, while the significant hits based on the interaction term appears to yield another two outliers, namely CDACT-2 and CDACT-7. Comparison of the medians does not yield any significant difference.
 
-```{r CDREM-5 and CDREM-8, echo = F}
-pData(GMset.culled)[c("3998634004_R03C01", "3998590010_R02C02"),]
-View(pData(GMset.culled))
-```
-No clear correlation could be found between CDREM-5 and CDREM-8. Hierarchical clustering had not clustered them together.
+
+###########################
+# Not interesting anymore #
+###########################
 
 Here we aim to just look at TNF usage thereby dropping the whole "active" and "remissive" constructs.
 ```{r aTNF vs non-aTNF, echo = F}
@@ -982,6 +1178,31 @@ for(i in 1:20){
 
 ```
 After multiple correction, there are no significant hits anymore, but when plotting the top 20, for some reason most medians (nor means) do not appear to overlap. Could the methylation status of monocytes be influenced by aTNF usage in a systematic manner. Such an experiment could potentially provide interesting insights into the molecular pathways of aTNF medication.
+
+####################################
+# Model with aTNF, Age and ACT/REM #
+####################################
+
+In the following chunks I will build the model using aTNF, Age and ACT/REM (and SVA; though I am afraid I will overfit my data this way). Take note that I am not sure what I will get out of it, but I am curious. Probably the statistics is quite rubbish as well as we are dealing with an imbalanced design due to aTNF not being present in HCs
+```{r model ~ CD + Age + aTNF}
+design.CD.Age.aTNF <- model.matrix(~0 + factor_interest.rmout + pData(GMset.rmout)$AGE + factor_aTNF + factor_interest.rmout:factor_aTNF)
+colnames(design.CD.Age.aTNF) <- c("HC", "CDACT", "CDREM", "Age", "aTNF", "CDACT:aTNF", "CDREM:aTNF")
+fit.CD.Age.aTNF <- lmFit(object = M.rmout, design = design.CD.Age.aTNF)
+#lmFit will warn for partial NA coefficients, that is caused by the imbalanced design of the study where HCs have no aTNF
+fit.CD.Age.aTNF.eb <- eBayes(fit.CD.Age.aTNF)
+
+########### UNFISHINED: NEED TO DEFINE CONTRASTS
+
+#CDACT:aTNF
+top.CD.Age.aTNF_CDACT.aTNF <- topTable(fit = fit.CD.Age.aTNF.eb, coef = 6, number = "Inf")
+top.CD.Age.aTNF_CDACT.aTNF <- cbind(top.CD.Age.aTNF_CDACT.aTNF, annotation.culled[rownames(top.CD.Age.aTNF_CDACT.aTNF), c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
+sig.top.CD.Age.aTNF_CDACT.aTNF <- top.CD.Age.aTNF_CDACT.aTNF[which(top.CD.Age.aTNF_CDACT.aTNF$adj.P.Val < 0.05),]
+```
+
+```{r model ~ CD + Age + aTNF + SVA}
+
+```
+
 
 ###########
 # Version #
