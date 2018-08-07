@@ -1,275 +1,328 @@
 ---
-title: "Methylation Analysis Monocytes 2015"
+title: "DM analysis PRJ0000002_CDMON"
 author: "Andrew Li Yim"
 date: "November 4, 2015"
 output: html_document
 ---
 
-This script was used for analyzing the data obtained from the Illumina HumanMethylation 450k Infinium BeadChip Array. This experiment was setup in combination with the fatlose study. One of the prerequisites is that the .idat files are in pairs in the respective subfolders. This can be achieved using the shell script: idat_finder.sh
+In this report we will perform the differential methylation analyses on CD14+ monocytes derived from CD and non-CD patients. The CD patients can be further subdivided into active and remissive CD.
 
-Important to note is that the chunks are dependent on one another, meaning that chunks must be run in a sequential order.
+```{r setup, echo = F}
+require(minfi)
+samplesDir <- file.path("data", "samples")
+commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")
+outputDir <- file.path("output", "01_DM_analyses")
+dir.create(outputDir)
 
-Preset some values and load some useful functions
-```{r Preset values, echo = FALSE}
-#Set seed
-set.seed(1)
+manuscriptDir <- file.path("publications", "manuscript")
+dir.create(manuscriptDir)
+
+samplesheet <- read.metharray.sheet(base = samplesDir, pattern = "samplesheet_PRJ0000002_CDMON_V5.csv")
+samplesheet$Basename <- samplesheet$Path
+samplesheet$Sex <- "F"
+
+rgset <- read.metharray.exp(targets = samplesheet)
 ```
 
-We initially read in the target/pheno files and perform the associated Quality Control using methylAid
-```{r Read the files and QC, echo = FALSE}
-require(IlluminaHumanMethylation450kmanifest)
-require(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+```{r sample information}
+require(dplyr)
+samplesheet %>% 
+  select(Age, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mu = mean(Age), stdev = (sd(Age)))
+```
+
+```{r Quality control, echo = FALSE}
+edaDir <- file.path(outputDir, "eda")
+dir.create(edaDir)
+
 require(MethylAid)
+methylaid_summarized <- summarize(samplesheet)
+visualize(methylaid_summarized)
+
 require(shinyMethyl)
-require(minfi)
+shinymethyl_summarized <- shinySummarize(rgset)
+runShinyMethyl(shinymethyl_summarized)
 
-sourceDir = '/home/ayliyim/Documents/Projects/Crohns Disease/2016_Analysis_Monocytes_2015/data'
-targets <- read.metharray.sheet(base = sourceDir, pattern = "Pheno")
-targets$Slide <- as.numeric(targets$Slide)
-
-RGset <- read.metharray.exp(targets = targets)
-
-#QC-check: MethylAid
-methylaid.summary <- summarize(targets)
-visualize(methylaid.summary)
-
-```
-No bad samples
-
-We now preprocess our results using functional normalization and attach the annotation to the probes, thereby removing probes located on the sex chromosomes, those which bind to CpGs that contain SNPs and those that bind to promiscuous probes.
-```{r Preprocessing/Normalization, echo = F}
-GMset <- preprocessFunnorm(rgSet = RGset)
-
-#Drop Y chromosome, we only have females here
-GMset.noSex <- GMset[-which(getAnnotation(GMset)$chr %in% c("chrY")),]
-#Drop SNP
-GMset.noSNPs <- GMset.noSex[-which(getSnpInfo(GMset.noSex)$CpG_maf > 0.01 | getSnpInfo(GMset.noSex)$SBE_maf > 0.01),]
-#Drop promiscuous probes
-promProbes <- read.csv("/home/ayliyim/ownCloud/Data/HumanMethylation450k/Non-specific-probes-Illumina450k.csv", stringsAsFactors = F)[,1]
-GMset.nopromProbes <- GMset.noSNPs[featureNames(GMset.noSNPs) %in% rownames(getAnnotation(GMset)[!rownames(getAnnotation(GMset)) %in% promProbes, ]), ]
-
-GMset.culled <- GMset.nopromProbes
-annotation.culled <- getAnnotation(GMset.culled)
-annotation.culled.gr <- makeGRangesFromDataFrame(annotation.culled, keep.extra.columns = T, start.field = "pos", end.field = "pos")
+require(ewastools)
+ewastools_samples <- read_idats(samplesheet$Basename)
+ewastools_betas <- dont_normalize(ewastools_samples)
+ewastools_snps <- call_genotypes(ewastools_betas[ewastools_samples$manifest[probe_type == 'rs', index], ], learn = F)
+check_snp_agreement(genotypes = ewastools_snps$gamma, weights = 1 - ewastools_snps$outliers, donor_ids = samplesheet$Donor_ID, sample_ids = samplesheet$Sample_ID)
 ```
 
-Extract the M-values and the betas for further processing
-```{r Extract M-values and Beta-values, echo = F}
-M.culled <- getM(GMset.culled)
-# For some reason functional normalization introduces 0s for unmethylated channels, which result in the M-value acquiring values of negative infinity (log2(0) == -Inf), I will throw these CpGs out.
-M.culled <- M.culled[-which(M.culled == -Inf, arr.ind = T, useNames = F)[,1],]
-Beta.culled <- getBeta(GMset.culled)
-```
+According to MethylAid, all samples pass the quality control. Additionally, the ewastools package was used to confirm that the samples were obtained from the same origin.
+As the sample pertains peripheral blood, we can utilize the estimateCellCounts function from minfi to see whether we observe any differences in estimated cell populations between the various groups.
 
-Edit the phenodata such that the three contrasts are annotated correctly
-```{r Factor of interest, echo = F}
-factor_interest <- gsub("-.*", "", pData(GMset.culled)$inclusionnr)
-factor_interest <- gsub("[0-9]", "", factor_interest)
-```
-
-Exploratory data analysis. 
-```{r Exploratory Data Analysis, echo = F}
-require(minfi)
+```{r Blood cell distribution}
 require(FlowSorted.Blood.450k)
-require(reshape)
-require(plyr)
-require(RColorBrewer)
-require(rafalib)
 require(ggplot2)
+require(Cairo)
 
-######################
-# Correlation matrix #
-######################
-M.cor <- cor(M.culled)
-cols <- colorRampPalette(rev(brewer.pal(11,"RdYlBu")))(100)
+cellCounts <- estimateCellCounts(rgSet = rgset, 
+                                 compositeCellType = "Blood",
+                                 processMethod = "auto", 
+                                 probeSelect = "auto")
+cellCounts <- data.frame(cellCounts, severity = pData(rgset)$Severity, array = rownames(cellCounts))
 
-svg(filename = "Correlation_matrix.svg")
-image(1:ncol(M.culled), 1:ncol(M.culled), M.cor, col = cols, main = "Correlation Matrix", xaxt = "n", xlab = "", yaxt = "n", ylab = "")
-# axis(2, 1:ncol(M.culled), as.numeric(as.factor(pData(GMset)$Cohort)), las = 2)
-# axis(1, 1:ncol(M.culled), as.numeric(as.factor(pData(GMset)$Cohort)), las = 2)
-axis(2, 1:ncol(M.culled), pData(GMset)$inclusionnr, las = 2)
-axis(1, 1:ncol(M.culled), pData(GMset)$inclusionnr, las = 2)
-dev.off()
+cellCounts_melt <- reshape2::melt(cellCounts, id.vars = c("severity", "array"), id.vals = c("Response"))
 
-###########################
-# Hierarchical Clustering #
-###########################
-mypar(1,1)
-dist.M.culled <- dist(t(M.culled))
-hc.M.culled <- hclust(dist.M.culled)
-
-svg(filename = "Hierarchical_Clustering.svg")
-myplclust(hc.M.culled, labels = pData(GMset)$inclusionnr, lab.col = as.fumeric(factor_interest))
-legend("topright", legend = unique(factor_interest), pch = 16, col = as.fumeric(unique(factor_interest)))
-dev.off()
-
-###########
-# MDS/PCA #
-###########
-M.culled.centered <- M.culled-rowMeans(M.culled)
-M.svd <- svd(M.culled.centered)
-
-PCA.df <- data.frame(PC1 = M.svd$v[,1], PC2 = M.svd$v[,2], Cohort = factor_interest)
-ggplot(PCA.df, aes(x = PC1, y = PC2, color = Cohort, shape = Cohort)) + 
-  geom_point(aes(size = 5)) +
+cellCounts_plot <- ggplot(cellCounts_melt, aes(x = severity, y = value)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  facet_wrap(~variable) +
   theme_bw() +
-  ggtitle("PC1 vs PC2") +
-  ylab("PC2") +
-  xlab("PC1") +
-  theme(plot.title = element_text(face = "bold"),
-        axis.title = element_text(size = 14, face = "bold"),
-        axis.text = element_text(size = 12), 
-        legend.title = element_text(size = 14, face = "bold"),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom")
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
-#Order the samples based on PC1 to see who are the outliers
-pData(GMset.culled)[order(M.svd$v[,1]),]
-
-#Plot variance per PC
-#What we expect to see if no batch effects were present
-y0 <- matrix(rnorm(nrow(M.culled)*ncol(M.culled)), nrow(M.culled), ncol(M.culled))
-d0 <- svd(y0)$d
-LIM <- range(c(d0^2/sum(d0^2), M.svd$d^2/sum(M.svd$d^2)))
-
-svg(filename = "Variance_per_PC.svg")
-plot(d0^2/sum(d0^2), ylab = "Variance Explained", xlab = "Principal Component", pch = 16, ylim = LIM)
-#What we actually see
-points(M.svd$d^2/sum(M.svd$d^2), ylab = "Variance Explained", xlab = "Principal Component", pch = 16, col = "red")
-legend("topright", c("Monocytes2015", "Randomized_Monocytes2015"), col = c("red", "black"), pch = 16)
-dev.off()
-
-###########################
-# Blood cell distribution #
-###########################
-cellCounts <- estimateCellCounts(rgSet = RGset.correct, compositeCellType = "Blood", cellTypes = c("CD8T","CD4T", "NK","Bcell","Mono","Gran"), verbose = T, returnAll = F, meanPlot = T)
-#Plot the blood cell distribution
-#CC.df <- data.frame(names = rownames(cellCounts), cohort = factor_interest, cellCounts)
-CC.df <- data.frame(cohort = factor_interest, cellCounts)
-CC.df.melted <- melt(CC.df, id.vars = "cohort")
-
-#Barplot
-#CC.means <- ddply(CC.df.melted, c("cohort", "variable"), summarise,mean=mean(value))
-#CC.means.barplot <- qplot(x=cohort, y=mean, fill=variable, data=CC.means, geom="bar", stat="identity", position="dodge") + theme_bw()
-
-#Box-stripplot
-p <- ggplot(data = CC.df.melted, aes(x = cohort, y = value, ymax = max(value)*1.05))
-p <- p + geom_boxplot(aes(fill = variable), outlier.colour = NA)
-p <- p + geom_point(aes(y = value, group = variable), position = position_dodge(width = 0.75))
-p <- p + theme_bw()
-p <- p + facet_wrap(~cohort, scales = "free")
-p <- p + xlab("Cohort") + ylab("Ratio")
-p <- p + guides(fill = guide_legend(title = "Blood cell group"))
-
-svg(filename = "Bloodcell_estimation.svg")
-p
+Cairo(width = 1000, height = 1000, type = "png", file = file.path(edaDir, "estimatedCellCounts.png"), bg = "white", units = "px", dpi = 120)
+print(cellCounts_plot)
 dev.off()
 ```
-Note that in the correlation matrix all samples are highly correlated to one another with the exception of HC1 and up to some extent HC6. Additionally, we also see that CDACT-1a and CDACT-1b are display the strongest correlations, which is understandable since they are technical replicates from one another. The results show that we have a few outliers in the MDS-plot on PC1, which we find back in the hierarchical clustering. Srangely, the outliers are located in the controls (HC1 and HC6). To compensate for this, I will compare the results obtained when I keep HC1 and remove HC1 from the sample. 
-  Aside from said outliers, no clear clustering exists for the different groups at face value, forshading similar results to the methylation analysis of the Whole Blood 2013 cohort. On a more positive note, the blood cell distribution indicates that most of the cells appear to be monocytes. However, we do see that the controls display minor populations of CD8T, CD4T, NK and B-cells and no granulocytes, while the CDACT and CDREM display the opposite. 
 
-Seeing that CDACT-1a and CDACT-1b are technically technobiological replicates from one another (They are obtained from the same blood sample (technical), but "could" represent different subtypes (biological)), I sought to establish whether they were very different from one another, justifying their inclusion in the analysis; if they are the same however, they ought to be excluded. In the hierarchical clustering and correlation plot it is quite evident that they belong to the same cluster. In the next chunk I aim to see whether they are comprised of different celltypes. If they are the same, I would want to throw one out as it would be a technical duplicate meaning that the samples are paired, thereby biasing the results.
-```{r CDACT-1a and CDACT-1b, echo = F}
-cdact1 <- cellCounts[grep("CDACT-1", pData(GMset.culled)$inclusionnr),]
-cdact1.melt <- melt(cdact1)
+The cell distribution accurately guesses that the samples pertain monocytes. There appears to be one sample however that appears more CD4T-like.
 
-colnames(cdact1.melt) <- c("cdact1", "cell", "value")
+```{r CD4T samples}
+require(dplyr)
 
-cdact1.melt$cdact1 <- gsub("3998590053_R03C01", "CDACT1a", cdact1.melt$cdact1)
-cdact1.melt$cdact1 <- gsub("3998920093_R06C02", "CDACT1b", cdact1.melt$cdact1)
+CD4T_array_ID <- cellCounts_melt %>% 
+  filter(variable == "Mono" & value < 0.25) %>% 
+  select(array)
 
-#Barplot
-cdact1.barplot <- qplot(x=cdact1, y=value, fill=cell, data=cdact1.melt, geom="bar", stat="identity", position="dodge") + theme_bw()
-svg(filename = "CDACT1_Bloodcell_estimation.svg")
-cdact1.barplot
-dev.off()
+pData(rgset)[CD4T_array_ID$array, "Sample_ID"]
 ```
-In line with what we observed previously for the hierarchical clustering and PCA, we see that the blood cell distribution of CDACT1a and CDACT1b are similar. To this end, I think we will need to remove one from the data. Seeing that both are quality-wise good, I will remove CDACT-1b. 
 
-###############################################
-# All samples (Removed CDACT-1b, HC1 and HC6) #
-###############################################
-Filter out CDACT1b, HC1 and HC6
-```{r}
-GMset.culled.filtered <- GMset.culled[,-which(pData(GMset.culled)$inclusionnr == "CDACT-1b" | pData(GMset.culled)$inclusionnr == "HC1" | pData(GMset.culled)$inclusionnr == "HC6")]
+We will next investigate whether this particular sample is an outlier in the PCA as well. Before that, we will remove the regular outliers.
 
-###########
-# MDS/PCA #
-###########
-M.filtered <- getM(GMset.culled.filtered)
-M.filtered <- M.filtered[-which(M.filtered == -Inf, arr.ind = T, useNames = F)[,1],]
+```{r Preprocessing}
+gmset <- preprocessFunnorm(rgSet = rgset)
+gmset_nosnpcpg <- gmset[with(getSnpInfo(gmset), which(CpG_maf < 0.01 | is.na(CpG_maf))),]
+gmset_nosnpsbe <- gmset_nosnpcpg[with(getSnpInfo(gmset_nosnpcpg), which(SBE_maf < 0.01 | is.na(SBE_maf))),]
+gmset_nosex <- gmset_nosnpsbe[-which(getAnnotation(gmset_nosnpsbe)$chr %in% c("chrX", "chrY")),]
 
-M.filtered.centered <- M.filtered-rowMeans(M.filtered)
-M.svd <- svd(M.filtered.centered)
+pmprobes <- read.csv(file.path(commondataDir, "IlluminaHumanMethylationBeadChip450k", "Non-specific-probes-Illumina450k.csv"), stringsAsFactors = F, header = T)[,1]
+gmset_filtered <- gmset_nosex[!names(gmset_nosex) %in% pmprobes,]
 
-factor_interest <- gsub("-.*", "", pData(GMset.culled.filtered)$inclusionnr)
-factor_interest <- factor(x = gsub("[0-9]", "", factor_interest), levels = rev(unique(gsub("[0-9]", "", factor_interest))))
+mvals <- getM(gmset_filtered)
 
-PCA.df <- data.frame(PC1 = M.svd$v[,1], PC2 = M.svd$v[,2], Cohort = factor_interest)
-ggplot(PCA.df, aes(x = PC1, y = PC2, color = Cohort, shape = Cohort)) + 
-  geom_point(aes(size = 5)) +
+gmset_filtered <- gmset_filtered[-which(abs(mvals) == Inf, arr.ind = T)[,1],]
+
+betas <- getBeta(gmset_filtered)
+mvals <- getM(gmset_filtered)
+```
+
+Are there any sex discrepancies?
+
+```{r Annotated and predicted sex}
+require(ggplot2)
+require(dplyr)
+require(ggrepel)
+
+pData(gmset_filtered) %>% 
+  data.frame %>% 
+  select(Sample_ID, Sex, predictedSex, xMed, yMed) %>%
+  mutate(Sample_label = ifelse(Sex == predictedSex, "", Sample_ID)) %>% 
+  ggplot(aes(x = xMed, y = yMed, col = Sex, label = Sample_label)) +
+  geom_text_repel(show.legend = F) +
+  geom_point(size = 4) +
   theme_bw() +
-  ggtitle("PC1 vs PC2") +
-  ylab("PC2") +
-  xlab("PC1") +
-  theme(plot.title = element_text(face = "bold"),
-        axis.title = element_text(size = 14, face = "bold"),
-        axis.text = element_text(size = 12), 
-        legend.title = element_text(size = 14, face = "bold"),
-        legend.text = element_text(size = 12),
-        legend.position = "bottom")
-
+  coord_fixed() +
+  ggtitle("Sex chromosome probe median intensities") +
+  xlab("chrX") +
+  ylab("chrY") +
+  theme(text = element_text(size=20))
 ```
 
+```{r PCA}
+require(plotly)
 
-We initially compare CD vs HC whereby we perform linear regression to look for any systematic differences 
-```{r CD vs HC, echo = F}
+mvals_dm <- mvals - rowMeans(mvals)
+mvals_svd <- svd(t(mvals_dm))
+
+mvals_svd_df <- data.frame(Sample_ID = pData(gmset_filtered)$Sample_ID,
+                           Origin = pData(gmset_filtered)$Donor_ID,
+                           Age = pData(gmset_filtered)$Age,
+                           Severity = pData(gmset_filtered)$Severity,
+                           Sex = pData(gmset_filtered)$predictedSex,
+                           PC1 = mvals_svd$u[,1],
+                           PC2 = mvals_svd$u[,2])
+
+mvals_svd_plotobj <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age, Sex = Sex)) +
+  geom_point(aes(col = Origin)) +
+  theme_bw() +
+  theme(text = element_text(size=20))
+
+ggplotly(mvals_svd_plotobj)
+```
+
+We again observe an outlier on PC1.
+
+```{r PCA outlier}
+mvals_svd_df[which.max(mvals_svd_df$PC1),]
+```
+
+This outlier appears to be HC1 again. Due to its outlier status, we will therefore remove HC1 from further analyses.
+
+```{r HC1 removal}
+gmset_filtered <- gmset_filtered[, pData(gmset_filtered)$Sample_ID != "HC1"]
+pData(gmset_filtered)$Severity <- factor(pData(gmset_filtered)$Severity, levels = c("Non_CD", "Remissive", "Active"))
+
+betas <- getBeta(gmset_filtered)
+mvals <- getM(gmset_filtered)
+```
+
+There are two samples derived from the same donor: CDACT-1a and CDACT-1b. As there is no clear way of choosing one over the other, we will take the mean.
+
+```{r CDACT1 aggregation}
+mvals_filtered <- data.frame(CDACT1 = rowMeans(mvals[, which(pData(gmset_filtered)$Donor_ID %in% "CDACT-1", arr.ind = T)]), mvals[, 3:ncol(mvals)])
+betas_filtered <- data.frame(CDACT1 = rowMeans(betas[, which(pData(gmset_filtered)$Donor_ID %in% "CDACT-1", arr.ind = T)]), betas[, 3:ncol(betas)])
+
+pdata_filtered <- pData(gmset_filtered)[-1,]
+colnames(mvals_filtered) <- colnames(betas_filtered) <- rownames(pdata_filtered)
+```
+
+```{r DM analyses preparation}
 require(limma)
-Beta.filtered <- getBeta(GMset.culled.filtered)
 
-design.mat <- model.matrix(~0+factor_interest + pData(GMset.culled.filtered)$AGE)
-colnames(design.mat) <- c("HC", "CDREM", "CDACT", "Age")
+design_mat <- model.matrix(~0 + Severity + Age, data = pdata_filtered)
+colnames(design_mat) <- c("Non_CD", "Remissive", "Active", "Age")
 
-M.lfit <- lmFit(object = M.filtered, design = design.mat)
-Beta.lfit <- lmFit(object = Beta.filtered, design = design.mat)
+mvals_lmfit <- lmFit(mvals_filtered, design = design_mat)
+betas_lmfit <- lmFit(betas_filtered, design = design_mat)
 
-contmat <- makeContrasts(
-  CDvHC = (CDREM+CDACT)/2-HC, #Global CD vs Non_CD
-  CDACTvCDREM = CDACT-CDREM, #Active vs Remissive
-  levels = design.mat
+contrast_mat <- makeContrasts(
+  CDvNon_CD = (Remissive + Active)/2 - Non_CD,
+  ACTvREM = Active - Remissive,
+  levels = design_mat
 )
 
-M.fit.cont <- contrasts.fit(M.lfit, contmat)
-M.fit.eb <- eBayes(M.fit.cont)
+mvals_contrastfit <- contrasts.fit(mvals_lmfit, contrast_mat)
+mvals_ebayes <- eBayes(mvals_contrastfit)
 
-Beta.fit.cont <- contrasts.fit(Beta.lfit, contmat)
-Beta.fit.eb <- eBayes(Beta.fit.cont)
-
-CDvHC.top <- topTable(fit = M.fit.eb, coef = 1, number = Inf, adjust.method = "BH")
-CDvHC.top <- cbind(CDvHC.top, annotation.culled[rownames(CDvHC.top),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-CDvHC.top$Beta <- topTable(fit = Beta.fit.eb, coef = 1, number = Inf, adjust.method = "BH")[rownames(CDvHC.top),"logFC"]
-
-write.csv(CDACTvCDREM.top, "CDvHC_Age.csv")
-
-CDACTvCDREM.top <- topTable(fit = M.fit.eb, coef = 2, number = Inf, adjust.method = "BH")
-CDACTvCDREM.top <- cbind(CDACTvCDREM.top, annotation.culled[rownames(CDACTvCDREM.top),c("UCSC_RefGene_Name", "UCSC_RefGene_Accession", "UCSC_RefGene_Group")])
-CDACTvCDREM.top$Beta <- topTable(fit = Beta.fit.eb, coef = 2, number = Inf, adjust.method = "BH")[rownames(CDvHC.top),"logFC"]
-
-write.csv(CDACTvCDREM.top, "CDACTvCDREM_Age.csv")
+betas_contrastfit <- contrasts.fit(betas_lmfit, contrast_mat)
+betas_ebayes <- eBayes(betas_contrastfit)
 ```
 
-```{r DMR}
+```{r DMP analysis}
+dmpDir <- file.path(outputDir, "dmps")
+dir.create(dmpDir)
 
+require(NDlib)
+
+gmset_anno <- getAnnotation(gmset_filtered)
+gmset_anno_gr <- makeGRangesFromDataFrame(gmset_anno, keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+
+CDvNon_CD <- topTable(mvals_ebayes, coef = "CDvNon_CD", number = "Inf", adjust.method = "BH")
+CDvNon_CD <- cbind(CDvNon_CD, Beta = coefficients(betas_ebayes)[rownames(CDvNon_CD), "CDvNon_CD"], gmset_anno[rownames(CDvNon_CD), ])
+ACTvREM <- topTable(mvals_ebayes, coef = "ACTvREM", number = "Inf", adjust.method = "BH")
+ACTvREM <- cbind(ACTvREM, Beta = coefficients(betas_ebayes)[rownames(ACTvREM), "ACTvREM"], gmset_anno[rownames(ACTvREM), ])
+
+write.csv(CDvNon_CD, file.path(dmpDir, "CDvNon_CD.csv"))
+write.csv(ACTvREM, file.path(dmpDir, "ACTvREM.csv"))
+
+for(i in 1:10){
+  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(dmpDir, paste0(i, "_", rownames(CDvNon_CD)[i], "_CDvNon_CD.pdf")), bg = "white", units = "px", dpi = 120)
+  print(cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
+  dev.off()
+  
+  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(dmpDir, paste0(i, "_", rownames(ACTvREM)[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
+  print(cpg_strip_plot(cpg_num = rownames(ACTvREM)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
+  dev.off()
+}
 ```
 
-Given that no systematic differences can be observed, we next questioned whether we could observe any positions and regions that were variably affected (e.g. the variance is increased in one group versus the other)
+##CD vs non-CD
+```{r Surrounding CpGs cg17206772}
+cg17206772_area <- which(rownames(gmset_anno) == rownames(CDvNon_CD)[1])
+cg17206772_area_gr <- gmset_anno_gr[(cg17206772_area-5):(cg17206772_area+5),]
+
+dmr_plot(dmr_gr = range(cg17206772_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
+```
+
+```{r Surrounding CpGs cg16921727}
+cg16921727_area <- which(rownames(gmset_anno) == rownames(CDvNon_CD)[2])
+cg16921727_area_gr <- gmset_anno_gr[(cg16921727_area-5):(cg16921727_area+5),]
+
+dmr_plot(dmr_gr = range(cg16921727_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
+```
+
+##ACT vs REM
+
+```{r Surrounding CpGs cg06521852}
+cg06521852_area <- which(rownames(gmset_anno) == rownames(ACTvREM)[2])
+cg06521852_area_gr <- gmset_anno_gr[(cg06521852_area-5):(cg06521852_area+5),]
+
+dmr_plot(dmr_gr = range(cg06521852_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, flanks = 1)
+```
+
+```{r Overrepresentation analyses}
+pathwayDir <- file.path(outputDir, "pathways")
+dir.create(pathwayDir)
+
+require(missMethyl)
+
+top100_CDvNon_CD_kegg <- gometh(sig.cpg = rownames(CDvNon_CD)[1:100], all.cpg = rownames(gmset_anno), collection = "KEGG", array.type = "450K")
+top100_CDvNon_CD_kegg <- top100_CDvNon_CD_kegg[order(top100_CDvNon_CD_kegg$P.DE),]
+write.csv(top100_CDvNon_CD_kegg, file.path(pathwayDir, "CDvNon_CD_top100_kegg.csv"))
+
+top100_ACTvREM_kegg <- gometh(sig.cpg = rownames(ACTvREM)[1:100], all.cpg = rownames(gmset_anno), collection = "KEGG", array.type = "450K")
+top100_ACTvREM_kegg <- top100_ACTvREM_kegg[order(top100_ACTvREM_kegg$P.DE),]
+write.csv(top100_ACTvREM_kegg, file.path(pathwayDir, "ACTvREM_top100_kegg.csv"))
+```
+
+```{r DMR analysis}
+dmrDir <- file.path(outputDir, "dmrs")
+dir.create(dmrDir)
+
+require(DMRcate)
+dmr_anno_CDvNon_CD <- cpg.annotate(object = as.matrix(mvals_filtered),
+                                   datatype = "array",
+                                   arraytype = "450K",
+                                   what = "M",
+                                   analysis.type = "differential",
+                                   design = design_mat,
+                                   contrasts = T,
+                                   cont.matrix = contrast_mat,
+                                   coef = "CDvNon_CD")
+dmr_CDvNon_CD <- dmrcate(dmr_anno_CDvNon_CD, lambda = 1000, C = 2, min.cpgs = 3, mc.cores = 8, pcutoff = 0.05)
+dmr_CDvNon_CD_gr <- extractRanges(dmr_CDvNon_CD, genome = "hg19")
+
+write.csv(as.data.frame(dmr_CDvNon_CD_gr), file.path(dmrDir, "dmrs_CDvNon_CD.csv"))
+
+dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
+```
+
+We observe one DMR that we have observed previously: chr7:51538650-51539678. In this region, CD samples are hypermethylated relative to non-CD samples. Unfortunately, Illumina has no annotation for the probes within this region. One possible reason is that this region falls within an enhancer. We can use the Javierre et al. 2016 data to investigate this possibility. 
+
+```{r Enhancers pcHiC}
+pchic <- read.csv("~/archive/common_data/enhancers/javierre2016/ActivePromoterEnhancerLinks_hg19.tsv", sep = "\t")
+pchic_gr <- makeGRangesFromDataFrame(pchic, keep.extra.columns = T, seqnames.field = "oeChr", start.field = "oeSt", end.field = "oeEnd")
+
+findOverlaps(pchic_gr, dmr_CDvNon_CD_gr[1])
+```
+No overlaps were found, but Javierre et al. might not be the only source to look at. We will next Try Ensembl Regulatory. As Ensembl Regulatory uses GRCh38, we will need to liftover the coordinates.
+
+```{r Enhancers Ensembl Regulatory}
+require(rtracklayer)
+hg19togrch38 <- import.chain("~/archive/common_data/liftover_chains/hg19ToHg38.over.chain")
+dmr_CDvNon_CD_gr_grch38 <- liftOver(dmr_CDvNon_CD_gr[1], hg19togrch38)
+```
+
+Given that no systematic differences can be observed, we next questioned whether any positions were variably affected (e.g. the variance is increased in one group versus the other)
+
 ```{r VMPs}
+vmpDir <- file.path(outputDir, "vmps")
+dir.create(vmpDir)
+
 require(parallel)
 require(car)
+require(NDlib)
+require(Cairo)
 
 cl <- makeCluster(detectCores()-2)
 
-mult.var.test <- function(i, factor_interest, method = "levene"){
+mult.var.test <- function(i, factor_interest, method = c("levene", "bartlett", "fligner")){
+  method <- match.arg(method)
+  
   if(method == "levene"){
     pval <- leveneTest(y = i, group = factor_interest)$Pr[1]
     statistic <- leveneTest(y = i, group = factor_interest)$F[1]
@@ -282,76 +335,104 @@ mult.var.test <- function(i, factor_interest, method = "levene"){
   }
   
   results <- data.frame(pval = pval, statistic = statistic)
-  
   return(results)
 }
 
 clusterEvalQ(cl, library(car))
 
-#CDvHC
-CDvHC.factor <- as.character(factor_interest)
-CDvHC.factor[grep("CD", CDvHC.factor)] <- "CD"
+var_CDvNon_CD <- parApply(cl = cl, X = mvals_filtered, MARGIN = 1, FUN = mult.var.test, factor_interest = pdata_filtered$Status1)
+var_ACTvREM <- parApply(cl = cl, X = mvals_filtered, MARGIN = 1, FUN = mult.var.test, factor_interest = pdata_filtered$Severity)
+stopCluster(cl)
 
-var_results.CDvHC <- parApply(cl = cl, X = M.filtered, MARGIN = 1, FUN = mult.var.test, factor_interest = CDvHC.factor)
-var_results.CDvHC.df <- do.call(rbind, var_results.CDvHC)
-var_results.CDvHC.df$padj <- p.adjust(var_results.CDvHC.df$pval)
-var_results.CDvHC.df <- var_results.CDvHC.df[order(var_results.CDvHC.df$pval),]
-var_results.CDvHC.df$Gene <- annotation.culled.gr[rownames(var_results.CDvHC.df),]$UCSC_RefGene_Name
-var_results.CDvHC.df.sig <- var_results.CDvHC.df[var_results.CDvHC.df$padj < 0.05,]
+#CDvNon_CD
+var_CDvNon_CD_df <- do.call(rbind, var_CDvNon_CD)
+var_CDvNon_CD_df$padj <- p.adjust(var_CDvNon_CD_df$pval)
+var_CDvNon_CD_df <- var_CDvNon_CD_df[order(var_CDvNon_CD_df$pval),]
+var_CDvNon_CD_df$Gene <- gmset_anno_gr[rownames(var_CDvNon_CD_df),]$UCSC_RefGene_Name
+var_CDvNon_CD_sig <- var_CDvNon_CD_df[var_CDvNon_CD_df$padj < 0.05,]
 
+write.csv(var_CDvNon_CD_df, file.path(vmpDir, "vmp_CDvNon_CD.csv"))
 
+#ACTvREM
+var_ACTvREM_df <- do.call(rbind, var_ACTvREM)
+var_ACTvREM_df$padj <- p.adjust(var_ACTvREM_df$pval)
+var_ACTvREM_df <- var_ACTvREM_df[order(var_ACTvREM_df$pval),]
+var_ACTvREM_df$Gene <- gmset_anno_gr[rownames(var_ACTvREM_df),]$UCSC_RefGene_Name
+var_ACTvREM_sig <- var_ACTvREM_df[var_ACTvREM_df$padj < 0.05,]
 
-annotation.culled.gr[rownames(var_results.CDvHC.df.sig),]
+write.csv(var_ACTvREM_df, file.path(vmpDir, "vmp_ACTvREM.csv"))
 
-var_results.CDvHC.df.Beta <- Beta.filtered[rownames(var_results.CDvHC.df.sig),]
+for(i in 1:10){
+  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(vmpDir, paste0(i, "_", rownames(var_CDvNon_CD_df)[i], "_CDvNon_CD.pdf")), bg = "white", units = "px", dpi = 120)
+  print(cpg_strip_plot(cpg_num = rownames(var_CDvNon_CD_df)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
+  dev.off()
+  
+  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(vmpDir, paste0(i, "_", rownames(var_ACTvREM_df)[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
+  print(cpg_strip_plot(cpg_num = rownames(var_ACTvREM_df)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
+  dev.off()
+}
+```
 
-require(NDlib)
-cpg_strip_plot(cpg_num = "cg02656169", betas = Beta.filtered, factor_interest = factor_interest)
+#Figures
 
-require(pheatmap)
-require(RColorBrewer)
+```{r Figure 1}
+require(ggpubr)
 require(Cairo)
 
-col.hm <- colorRampPalette(rev(brewer.pal(9, "Spectral")))(100)
-CDvHC.anno <- data.frame(factor_interest)
-colnames(CDvHC.anno) <- "Degree"
-rownames(CDvHC.anno) <- colnames(var_results.CDvHC.df.Beta)
+fig1Dir <- file.path(manuscriptDir, "fig1")
+dir.create(fig1Dir)
 
-Cairo(file = "CDvHC_lev.png", type = "png", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
-pheatmap(var_results.CDvHC.df.Beta,
-         cluster_rows = T,
-         cluster_cols = F,
-         annotation_col = CDvHC.anno,
-         col=col.hm)
+fig1A <- cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[1], betas = betas_filtered, factor_interest = pdata_filtered$Status1, enlarged = F, type = "SE") + theme(legend.pos = "none") + labs(subtitle = paste(CDvNon_CD$chr[1], CDvNon_CD$pos[1], sep = ":"))
+
+fig1B <- dmr_plot(dmr_gr = range(cg17206772_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Status1, highlight = CDvNon_CD$pos[1]) + theme(legend.pos = "bottom", legend.title = element_blank())
+
+fig1 <- ggarrange(fig1A, fig1B, ncol = 2, labels = "AUTO", common.legend = T, legend = "bottom", align = "h")
+
+Cairo(width = 1000, height = 750, type = "png", file = file.path(fig1Dir, "fig1.png"), bg = "white", units = "px", dpi = 120)
+print(fig1)
 dev.off()
 
-#CDACTvCDREM
-M.filtered.CDACTvCDREM <- M.filtered[,grep("CD", factor_interest)]
-CDACTvCDREM.factor <- factor_interest[grep("CD", factor_interest)]
+Cairo(width = 2000, height = 1500, type = "pdf", file = file.path(fig1Dir, "fig1.pdf"), bg = "white", units = "px", dpi = 120)
+print(fig1)
+dev.off()
+```
 
-var_results.CDACTvCDREM <- parApply(cl = cl, X = M.filtered.CDACTvCDREM, MARGIN = 1, FUN = mult.var.test, factor_interest = CDACTvCDREM.factor)
-var_results.CDACTvCDREM.df <- do.call(rbind, var_results.CDACTvCDREM)
-var_results.CDACTvCDREM.df$padj <- p.adjust(var_results.CDACTvCDREM.df$pval)
-var_results.CDACTvCDREM.df <- var_results.CDACTvCDREM.df[order(var_results.CDACTvCDREM.df$pval),]
-var_results.CDACTvCDREM.df$Gene <- annotation.culled.gr[rownames(var_results.CDACTvCDREM.df),]$UCSC_RefGene_Name
-var_results.CDACTvCDREM.df.sig <- var_results.CDACTvCDREM.df[var_results.CDACTvCDREM.df$padj < 0.05,]
+```{r Figure 2}
+fig2Dir <- file.path(manuscriptDir, "fig2")
+dir.create(fig2Dir)
 
-var_results.CDACTvCDREM.df.Beta <- Beta.filtered[rownames(var_results.CDACTvCDREM.df.sig),]
-annotation.culled.gr[rownames(var_results.CDACTvCDREM.df.sig),]
+fig2A <- cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[2], betas = betas_filtered, factor_interest = pdata_filtered$Status1, enlarged = F, type = "SE") + theme(legend.pos = "none") + labs(subtitle = paste(CDvNon_CD$chr[2], CDvNon_CD$pos[2], sep = ":"))
 
-Cairo(file = "CDACTvCDREM_lev.png", type = "png", units = "px", width = 800, height = 800, dpi = 90, bg = "white")
-pheatmap(var_results.CDACTvCDREM.df.Beta,
-         cluster_rows = T,
-         cluster_cols = F,
-         annotation_col = CDvHC.anno,
-         col=col.hm)
+fig2B <- dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Status1, highlight = CDvNon_CD$pos[2]) + theme(legend.pos = "bottom", legend.title = element_blank())
+
+fig2 <- ggarrange(fig2A, fig2B, ncol = 2, labels = "AUTO", common.legend = T, legend = "bottom", align = "h")
+
+Cairo(width = 1000, height = 750, type = "png", file = file.path(fig2Dir, "fig2.png"), bg = "white", units = "px", dpi = 120)
+print(fig2)
 dev.off()
 
-cpg_strip_plot(cpg_num = "cg17446339", betas = Beta.filtered, factor_interest = factor_interest)
-
-stopCluster(cl)
+Cairo(width = 2000, height = 1500, type = "pdf", file = file.path(fig2Dir, "fig2.pdf"), bg = "white", units = "px", dpi = 120)
+print(fig2)
+dev.off()
 ```
 
-```{r VMRs}
 
+```{r Figure 3}
+fig3Dir <- file.path(manuscriptDir, "fig3")
+dir.create(fig3Dir)
+
+fig3A <- cpg_strip_plot(cpg_num = rownames(ACTvREM)[2], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE") + theme(legend.pos = "none") + labs(subtitle = paste(ACTvREM$chr[2], ACTvREM$pos[2], sep = ":"))
+
+fig3B <- dmr_plot(dmr_gr = range(cg06521852_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, highlight = ACTvREM$pos[2]) + theme(legend.pos = "bottom", legend.title = element_blank())
+
+fig3 <- ggarrange(fig3A, fig3B, ncol = 2, labels = "AUTO", common.legend = T, legend = "bottom", align = "h")
+
+Cairo(width = 1000, height = 750, type = "png", file = file.path(fig3Dir, "fig3.png"), bg = "white", units = "px", dpi = 120)
+print(fig3)
+dev.off()
+
+Cairo(width = 2000, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3.pdf"), bg = "white", units = "px", dpi = 120)
+print(fig3)
+dev.off()
 ```
+
