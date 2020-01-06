@@ -3,6 +3,8 @@ title: "DM analysis PRJ0000002_CDMON"
 author: "Andrew Li Yim"
 date: "November 4, 2015"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 In this report we will perform the differential methylation analyses on CD14+ monocytes derived from CD and non-CD patients. The CD patients can be further subdivided into active and remissive CD.
@@ -11,26 +13,61 @@ In this report we will perform the differential methylation analyses on CD14+ mo
 require(minfi)
 samplesDir <- file.path("data", "samples")
 commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")
-outputDir <- file.path("output", "01_DM_analyses")
-dir.create(outputDir)
 
-manuscriptDir <- file.path("publications", "manuscript")
+manuscriptDir <- file.path("docs", "manuscript")
 dir.create(manuscriptDir)
+proposalDir <- file.path("docs", "proposal")
+dir.create(proposalDir)
 
-samplesheet <- read.metharray.sheet(base = samplesDir, pattern = "samplesheet_PRJ0000002_CDMON_V5.csv")
+samplesheet <- read.metharray.sheet(base = samplesDir, pattern = "samplesheet_450k_PRJ0000002_CDMON_V6")
 samplesheet$Basename <- samplesheet$Path
 samplesheet$Sex <- "F"
 
 rgset <- read.metharray.exp(targets = samplesheet)
 ```
 
+Date the output directory.
+
+```{r output directory}
+outputDir <- file.path("output", "01_DM_450k_analyses", "200106")
+dir.create(outputDir)
+```
+
 ```{r sample information}
 require(dplyr)
+
+#Age
 samplesheet %>% 
   select(Age, Severity) %>%
   group_by(Severity) %>%
-  summarize(mu = mean(Age), stdev = (sd(Age)))
+  summarize(mean = mean(Age), stdev = sd(Age))
+
+#CRP
+samplesheet %>% 
+  select(CRP, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(CRP, na.rm = T), stdev = sd(CRP, na.rm = T))
+
+#HBI
+samplesheet %>% 
+  select(HBI, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(HBI, na.rm = T), stdev = sd(HBI, na.rm = T))
+
+#anti-TNF
+samplesheet %>% 
+  select(aTNF, Severity) %>%
+  group_by(Severity) %>%
+  summarize(n = n(), percentage = sd(aTNF, na.rm = T))
+
+#Corticosteroid
+samplesheet %>% 
+  select(Corticosteroid, Severity) %>%
+  group_by(Severity) %>%
+  summarize(n = n(), percentage = sd(Corticosteroid, na.rm = T))
+
 ```
+
 
 ```{r Quality control, echo = FALSE}
 edaDir <- file.path(outputDir, "eda")
@@ -146,12 +183,17 @@ mvals_svd_df <- data.frame(Sample_ID = pData(gmset_filtered)$Sample_ID,
                            PC1 = mvals_svd$u[,1],
                            PC2 = mvals_svd$u[,2])
 
-mvals_svd_plotobj <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age, Sex = Sex)) +
+mvals_svd_ggplotly <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age, Sex = Sex)) +
   geom_point(aes(col = Origin)) +
   theme_bw() +
   theme(text = element_text(size=20))
 
-ggplotly(mvals_svd_plotobj)
+ggplotly(mvals_svd_ggplotly)
+
+mvals_svd_plotobj <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age, Sex = Sex)) +
+  geom_point(aes(col = Origin)) +
+  theme_bw() +
+  theme(text = element_text(size=20))
 ```
 
 We again observe an outlier on PC1.
@@ -288,7 +330,61 @@ dmr_CDvNon_CD_gr <- extractRanges(dmr_CDvNon_CD, genome = "hg19")
 
 write.csv(as.data.frame(dmr_CDvNon_CD_gr), file.path(dmrDir, "dmrs_CDvNon_CD.csv"))
 
-dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
+dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, flanks = 0)
+
+dmr_cpgs <- names(subsetByOverlaps(gmset_anno_gr, dmr_CDvNon_CD_gr[1]))
+CDvNon_CD[dmr_cpgs,]
+dmr_betas <- melt(cbind(betas_filtered[dmr_cpgs,], dmr_cpgs))
+dmr_betas$Status <- pdata_filtered[dmr_betas$variable, "Status1"]
+colnames(dmr_betas) <- c("CpG", "ID", "Beta", "Status")
+```
+
+```{r Power calculation}
+powerDir <- file.path(outputDir, "power_analysis")
+dir.create(powerDir)
+
+library(pwr)
+
+cohend <- function(m1, m2, s1, s2){
+  (m1 - m2)/sqrt(((s1^2) + (s2^2))/2) 
+} 
+
+dmr_summarized <- dmr_betas %>% 
+  group_by(Status, CpG) %>%
+  summarise(
+    mu = mean(Beta),
+    sdev = sd(Beta)
+  ) %>% 
+  arrange(CpG)
+  #summarise_all(funs(trimws(paste(., collapse = ''))))
+
+dmr_summarized <- split(dmr_summarized, dmr_summarized$Status)
+dmr_summarized <- merge(dmr_summarized$CD, dmr_summarized$Non_CD, by = "CpG")
+rownames(dmr_summarized) <- dmr_summarized$CpG
+
+dmr_summarized$N <- do.call(c, lapply(rownames(dmr_summarized), function(cpg){
+  cohd <- cohend(m1 = dmr_summarized[cpg, "mu.x"], m2 = dmr_summarized[cpg, "mu.y"], s1 = dmr_summarized[cpg, "sdev.x"], s2 = dmr_summarized[cpg, "sdev.y"])
+  pwr.t.test(
+    n = NULL,                  # Observations in _each_ group
+    d = cohd,           
+    sig.level = 0.001,          # Type I probability
+    power = 0.80,              # 1 minus Type II probability
+    type = "two.sample",       # Change for one- or two-sample
+    alternative = "two.sided"
+  )$n
+}))
+
+pwr.t.test(
+       n = NULL,                  # Observations in _each_ group
+       d = 2.456725,           
+       sig.level = 0.001,          # Type I probability
+       power = 0.80,              # 1 minus Type II probability
+       type = "two.sample",       # Change for one- or two-sample
+       alternative = "two.sided"
+       )
+
+dmr_summarized <- dmr_summarized[dmr_cpgs,]
+write.csv(dmr_summarized, file.path(powerDir, "power_dmr_cpgs.csv"))
 ```
 
 We observe one DMR that we have observed previously: chr7:51538650-51539678. In this region, CD samples are hypermethylated relative to non-CD samples. Unfortunately, Illumina has no annotation for the probes within this region. One possible reason is that this region falls within an enhancer. We can use the Javierre et al. 2016 data to investigate this possibility. 
@@ -301,7 +397,7 @@ findOverlaps(pchic_gr, dmr_CDvNon_CD_gr[1])
 ```
 No overlaps were found, but Javierre et al. might not be the only source to look at. We will next Try Ensembl Regulatory. As Ensembl Regulatory uses GRCh38, we will need to liftover the coordinates.
 
-```{r Enhancers Ensembl Regulatory}
+```{r Promoters Ensembl Regulatory}
 require(rtracklayer)
 hg19togrch38 <- import.chain("~/archive/common_data/liftover_chains/hg19ToHg38.over.chain")
 dmr_CDvNon_CD_gr_grch38 <- liftOver(dmr_CDvNon_CD_gr[1], hg19togrch38)
@@ -373,8 +469,88 @@ for(i in 1:10){
 }
 ```
 
-#Figures
+#Primers DMR
+```{r primer}
+fig1propDir <- file.path(proposalDir, "fig1")
+dir.create(fig1propDir)
 
+tab1propDir <- file.path(proposalDir, "table1")
+dir.create(tab1propDir)
+
+
+require(GenomicRanges)
+amplicons <- data.frame(chr = rep("chr7", 9), 
+                        start = c(start(dmr_CDvNon_CD_gr[1]) + 247-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 247-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 247-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 247-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 744-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 733-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 463-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 744-1,
+                                  start(dmr_CDvNon_CD_gr[1]) + 246-1),
+                        end = c(start(dmr_CDvNon_CD_gr[1]) + 479,
+                                start(dmr_CDvNon_CD_gr[1]) + 475,
+                                start(dmr_CDvNon_CD_gr[1]) + 476,
+                                start(dmr_CDvNon_CD_gr[1]) + 471,
+                                start(dmr_CDvNon_CD_gr[1]) + 976,
+                                start(dmr_CDvNon_CD_gr[1]) + 976,
+                                start(dmr_CDvNon_CD_gr[1]) + 611,
+                                start(dmr_CDvNon_CD_gr[1]) + 977,
+                                start(dmr_CDvNon_CD_gr[1]) + 475),
+                        L_tm = c(54.95, 54.95, 54.95, 54.95, 54.71, 52.14, 57.38, 54.71, 56.22),
+                        R_tm = c(58.17 , 59.30, 58.99, 59.92, 54.90, 54.90, 57.88, 56.23, 59.30),
+                        L_GC = c(40.00, 40.00, 40.00, 40.00, 53.57, 40.00, 60.00, 53.57, 38.46),
+                        R_GC = c(60.00, 56.00, 56.00, 57.69, 58.33, 58.33, 53.85, 56.00, 56.00),
+                        L_seq = c("TTAGAGAATTTTTGGATTTGTAAGT", "TTAGAGAATTTTTGGATTTGTAAGT", "TTAGAGAATTTTTGGATTTGTAAGT", "TTAGAGAATTTTTGGATTTGTAAGT", "GAGGAGTTGTTATTTTTATTTTATTTAA", "GTAGAGTGTTTTAGAAATTTTTTTT", "GGGAGTTGTGTATATTTAGGTTGAG", "GAGGAGTTGTTATTTTTATTTTATTTAA", "TTTAGAGAATTTTTGGATTTGTAAGT"),
+                        R_seq = c("AAACTATACCAAAAAAACCCTCAAC", "TATACCAAAAAAACCCTCAACCTAA", "CTATACCAAAAAAACCCTCAACCTA", "CCAAAAAAACCCTCAACCTAAATATA", "AAAACTATATCTCCCTTACCACAC", "AAAACTATATCTCCCTTACCACAC", "CTATAAAAAACAATACAACCCTCTCC", "AAAAACTATATCTCCCTTACCACAC", "TATACCAAAAAAACCCTCAACCTAA"),
+                        tm = c(64.7, 64.8, 64.8, 64.5, 64.7, 64.6, 64.6, 64.7, 64.8),
+                        prod_nCpGs = c(11, 11, 11, 11, 11, 10, 6, 11, 11),
+                        ymin = seq(0, 4, by = 0.5),
+                        ymax = seq(0.5, 4.5, by = 0.5))
+
+amplicons$name <- paste0("amp", 1:9)
+amplicons$prod_length <- amplicons$end - amplicons$start
+amplicons$L_bps <- nchar(as.character(amplicons$L_seq))
+amplicons$R_bps <- nchar(as.character(amplicons$R_seq))
+
+amplicons <- amplicons[,c("chr", "start", "end", "name", "L_tm", "R_tm", "tm", "L_GC", "R_GC", "L_bps", "R_bps", "prod_nCpGs", "prod_length", "L_seq", "R_seq", "ymin", "ymax")]
+write.csv(amplicons, file.path(tab1propDir, "table1.csv"))
+
+dmr1 <- dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Status1, flanks = 0) + theme(legend.pos = "top", axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+amps <- ggplot(amplicons, aes(xmin = start, xmax = end, ymin = ymin, ymax = ymax)) + 
+  geom_rect(alpha = 0.25, col = "black") + 
+  geom_text(aes(x=start+(end-start)/2, y=ymin+(ymax-ymin)/2, label=name), size = 4) +
+  #facet_wrap(~name, ncol = 1, strip.position = "left") +
+  theme_bw() +
+  xlim(start(dmr_CDvNon_CD_gr[1]), end(dmr_CDvNon_CD_gr[1])) +
+  theme(axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size = 12), 
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+Cairo(width = 750, height = 1000, type = "png", file = file.path(fig1propDir, "fig1.png"), bg = "white", units = "px", dpi = 120)
+print(ggarrange(dmr1, amps, ncol = 1, nrow = 2, align = "v"))
+dev.off()
+
+Cairo(width = 1200, height = 1600, type = "pdf", file = file.path(fig1propDir, "fig1.pdf"), bg = "white", units = "px", dpi = 120)
+print(ggarrange(dmr1, amps, ncol = 1, nrow = 2, align = "v"))
+dev.off()
+```
+
+```{r MethPrimer}
+library(RCurl)
+library(htmltidy)
+
+methprimer <- readHTMLTable("/home/ayliyim/archive/projects/PRJ0000002_CDMON/data/primers/methprimer_dmr.html")
+```
+
+
+#Figures
 ```{r Figure 1}
 require(ggpubr)
 require(Cairo)
