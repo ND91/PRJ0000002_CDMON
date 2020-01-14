@@ -10,11 +10,14 @@ editor_options:
 In this report we will perform the differential methylation analyses on CD14+ monocytes derived from CD and non-CD patients. The CD patients can be further subdivided into active and remissive CD.
 
 ```{r setup, echo = F}
+require(pheatmap)
 require(minfi)
+require(aggregation)
+
 samplesDir <- file.path("data", "samples")
 commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")
 
-manuscriptDir <- file.path("docs", "manuscript")
+manuscriptDir <- file.path("docs", "manuscript", "200106")
 dir.create(manuscriptDir)
 proposalDir <- file.path("docs", "proposal")
 dir.create(proposalDir)
@@ -24,6 +27,11 @@ samplesheet$Basename <- samplesheet$Path
 samplesheet$Sex <- "F"
 
 rgset <- read.metharray.exp(targets = samplesheet)
+```
+
+```{r bespoke functions}
+source(file.path("src", "dmr_plot.R"))
+source(file.path("src", "dmg_plot.R"))
 ```
 
 Date the output directory.
@@ -64,8 +72,7 @@ samplesheet %>%
 samplesheet %>% 
   select(Corticosteroid, Severity) %>%
   group_by(Severity) %>%
-  summarize(n = n(), percentage = sd(Corticosteroid, na.rm = T))
-
+  summarize(n = n())
 ```
 
 
@@ -73,19 +80,19 @@ samplesheet %>%
 edaDir <- file.path(outputDir, "eda")
 dir.create(edaDir)
 
-require(MethylAid)
-methylaid_summarized <- summarize(samplesheet)
-visualize(methylaid_summarized)
-
-require(shinyMethyl)
-shinymethyl_summarized <- shinySummarize(rgset)
-runShinyMethyl(shinymethyl_summarized)
-
-require(ewastools)
-ewastools_samples <- read_idats(samplesheet$Basename)
-ewastools_betas <- dont_normalize(ewastools_samples)
-ewastools_snps <- call_genotypes(ewastools_betas[ewastools_samples$manifest[probe_type == 'rs', index], ], learn = F)
-check_snp_agreement(genotypes = ewastools_snps$gamma, weights = 1 - ewastools_snps$outliers, donor_ids = samplesheet$Donor_ID, sample_ids = samplesheet$Sample_ID)
+# require(MethylAid)
+# methylaid_summarized <- summarize(samplesheet)
+# visualize(methylaid_summarized)
+# 
+# require(shinyMethyl)
+# shinymethyl_summarized <- shinySummarize(rgset)
+# runShinyMethyl(shinymethyl_summarized)
+# 
+# require(ewastools)
+# ewastools_samples <- read_idats(samplesheet$Basename)
+# ewastools_betas <- dont_normalize(ewastools_samples)
+# ewastools_snps <- call_genotypes(ewastools_betas[ewastools_samples$manifest[probe_type == 'rs', index], ], learn = F)
+# check_snp_agreement(genotypes = ewastools_snps$gamma, weights = 1 - ewastools_snps$outliers, donor_ids = samplesheet$Donor_ID, sample_ids = samplesheet$Sample_ID)
 ```
 
 According to MethylAid, all samples pass the quality control. Additionally, the ewastools package was used to confirm that the samples were obtained from the same origin.
@@ -222,98 +229,158 @@ pdata_filtered <- pData(gmset_filtered)[-1,]
 colnames(mvals_filtered) <- colnames(betas_filtered) <- rownames(pdata_filtered)
 ```
 
-```{r DM analyses preparation}
+```{r pca filtered}
+mvals_filtered_dm <- mvals_filtered - rowMeans(mvals_filtered)
+mvals_filtered_svd <- svd(t(mvals_filtered_dm))
+
+mvals_filtered_svd_df <- data.frame(Sample_ID = pdata_filtered$Sample_ID,
+                                    Origin = pdata_filtered$Donor_ID,
+                                    Age = pdata_filtered$Age,
+                                    Severity = pdata_filtered$Severity,
+                                    PC1 = mvals_filtered_svd$u[,1],
+                                    PC2 = mvals_filtered_svd$u[,2])
+
+mvals_filtered_svd_plotobj <- ggplot(mvals_filtered_svd_df, aes(x = PC1, y = PC2, fill = Severity)) +
+  geom_point(shape = 21, size = 4) +
+  theme_bw() +
+  labs(title = "Principal component analysis") +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+```
+
+Prepare annotation for the eventual interpretation
+
+```{r Annotation preparation}
+gmset_anno <- getAnnotation(gmset_filtered)
+gmset_anno_gr <- makeGRangesFromDataFrame(gmset_anno, keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+```
+
+```{r Output directories}
+dmpDir <- file.path(outputDir, "dmps")
+dir.create(dmpDir)
+dmrDir <- file.path(outputDir, "dmrs")
+dir.create(dmrDir)
+dmgDir <- file.path(outputDir, "dmgs")
+dir.create(dmgDir)
+```
+
+#CD vs non-CD
+
+First we compare CD with non-CD.
+
+```{r DM analyses preparation cvn}
 require(limma)
 
-design_mat <- model.matrix(~0 + Severity + Age, data = pdata_filtered)
-colnames(design_mat) <- c("Non_CD", "Remissive", "Active", "Age")
+pdata_filtered$Status1 <- factor(pdata_filtered$Status1, levels = c("Non_CD", "CD"))
 
-mvals_lmfit <- lmFit(mvals_filtered, design = design_mat)
-betas_lmfit <- lmFit(betas_filtered, design = design_mat)
+design_cvn <- model.matrix(~Status1 + Age, data = pdata_filtered)
 
-contrast_mat <- makeContrasts(
-  CDvNon_CD = (Remissive + Active)/2 - Non_CD,
-  ACTvREM = Active - Remissive,
-  levels = design_mat
-)
+mvals_lmfit_cvn <- lmFit(mvals_filtered, design = design_cvn)
+betas_lmfit_cvn <- lmFit(betas_filtered, design = design_cvn)
 
-mvals_contrastfit <- contrasts.fit(mvals_lmfit, contrast_mat)
-mvals_ebayes <- eBayes(mvals_contrastfit)
-
-betas_contrastfit <- contrasts.fit(betas_lmfit, contrast_mat)
-betas_ebayes <- eBayes(betas_contrastfit)
+mvals_ebayes <- eBayes(mvals_lmfit_cvn)
+betas_ebayes <- eBayes(betas_lmfit_cvn)
 ```
 
 ```{r DMP analysis}
-dmpDir <- file.path(outputDir, "dmps")
-dir.create(dmpDir)
-
 require(NDlib)
 
-gmset_anno <- getAnnotation(gmset_filtered)
-gmset_anno_gr <- makeGRangesFromDataFrame(gmset_anno, keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
-
-CDvNon_CD <- topTable(mvals_ebayes, coef = "CDvNon_CD", number = "Inf", adjust.method = "BH")
-CDvNon_CD <- cbind(CDvNon_CD, Beta = coefficients(betas_ebayes)[rownames(CDvNon_CD), "CDvNon_CD"], gmset_anno[rownames(CDvNon_CD), ])
-ACTvREM <- topTable(mvals_ebayes, coef = "ACTvREM", number = "Inf", adjust.method = "BH")
-ACTvREM <- cbind(ACTvREM, Beta = coefficients(betas_ebayes)[rownames(ACTvREM), "ACTvREM"], gmset_anno[rownames(ACTvREM), ])
+CDvNon_CD <- topTable(mvals_ebayes, coef = "Status1CD", number = "Inf", adjust.method = "BH")
+CDvNon_CD <- cbind(CDvNon_CD, Beta = coefficients(betas_ebayes)[rownames(CDvNon_CD), "Status1CD"], gmset_anno[rownames(CDvNon_CD), ])
 
 write.csv(CDvNon_CD, file.path(dmpDir, "CDvNon_CD.csv"))
-write.csv(ACTvREM, file.path(dmpDir, "ACTvREM.csv"))
 
 for(i in 1:10){
-  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(dmpDir, paste0(i, "_", rownames(CDvNon_CD)[i], "_CDvNon_CD.pdf")), bg = "white", units = "px", dpi = 120)
-  print(cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
-  dev.off()
-  
-  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(dmpDir, paste0(i, "_", rownames(ACTvREM)[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
-  print(cpg_strip_plot(cpg_num = rownames(ACTvREM)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
+  Cairo(width = 600, height = 800, type = "pdf", file = file.path(dmpDir, paste0(i, "_", rownames(CDvNon_CD)[i], "_CDvNon_CD.pdf")), bg = "white", units = "px", dpi = 120)
+  print(cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[i], betas = betas_filtered, factor_interest = pdata_filtered$Status1, enlarged = F, type = "SE", legend = F) + 
+          theme(panel.grid.major=element_blank(),
+                panel.grid.minor=element_blank()))
   dev.off()
 }
 ```
 
-##CD vs non-CD
-```{r Surrounding CpGs cg17206772}
+```{r Heatmap cvn}
+hm_anno_t50_cvn <- data.frame(Status = pdata_filtered$Status1, row.names = rownames(pdata_filtered))
+
+betas_t50_cvn <- betas_filtered[rownames(CDvNon_CD[1:50,]),]
+betas_t50_cvn_dm <- betas_t50_cvn-rowMeans(betas_t50_cvn)
+
+pheatmap(betas_t50_cvn_dm, annotation_col = hm_anno_t50_cvn)
+```
+
+```{r Surrounding CpGs cvn}
+#cg17206772
 cg17206772_area <- which(rownames(gmset_anno) == rownames(CDvNon_CD)[1])
 cg17206772_area_gr <- gmset_anno_gr[(cg17206772_area-5):(cg17206772_area+5),]
 
 dmr_plot(dmr_gr = range(cg17206772_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
-```
 
-```{r Surrounding CpGs cg16921727}
+#cg16921727
 cg16921727_area <- which(rownames(gmset_anno) == rownames(CDvNon_CD)[2])
 cg16921727_area_gr <- gmset_anno_gr[(cg16921727_area-5):(cg16921727_area+5),]
 
 dmr_plot(dmr_gr = range(cg16921727_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
 ```
 
-##ACT vs REM
+```{r Differentially methylated genes cvn}
+CDvNon_CD_genes <- lapply(strsplit(CDvNon_CD$UCSC_RefGene_Name, ";"), unique)
+names(CDvNon_CD_genes) <- rownames(CDvNon_CD)
+CDvNon_CD_genes_nz <- CDvNon_CD_genes[which(lapply(CDvNon_CD_genes, length) != 0)]
 
-```{r Surrounding CpGs cg06521852}
-cg06521852_area <- which(rownames(gmset_anno) == rownames(ACTvREM)[2])
-cg06521852_area_gr <- gmset_anno_gr[(cg06521852_area-5):(cg06521852_area+5),]
+CDvNon_CD_genes_nz_df <- data.frame(CpG = gsub("(cg[0-9]{8})[0-9]", "\\1", names(unlist(CDvNon_CD_genes_nz))), 
+                                    Gene = unlist(CDvNon_CD_genes_nz))
+CDvNon_CD_genes_nz_df$pvalue <- CDvNon_CD[CDvNon_CD_genes_nz_df$CpG, "P.Value"]
 
-dmr_plot(dmr_gr = range(cg06521852_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, flanks = 1)
+CDvNon_CD_genes_nz_list <- split(CDvNon_CD_genes_nz_df, CDvNon_CD_genes_nz_df$Gene)
+
+CDvNon_CD_fisher <- lapply(CDvNon_CD_genes_nz_list, function(gene){
+  aggregation::fisher(gene$pvalue)
+})
+
+rm(CDvNon_CD_genes_nz_list)
+
+CDvNon_CD_ma <- data.frame(Gene = names(CDvNon_CD_fisher),
+                           Fisher_pval = unlist(CDvNon_CD_fisher))
+CDvNon_CD_ma$padj <- p.adjust(CDvNon_CD_ma$Fisher_pval)
+CDvNon_CD_ma <- CDvNon_CD_ma[order(CDvNon_CD_ma$Fisher_pval),]
+CDvNon_CD_ma_sig <- CDvNon_CD_ma[which(CDvNon_CD_ma$padj<0.05),]
+
+write.csv(CDvNon_CD_ma, file.path(dmgDir, "CDvNon_CD.csv"))
 ```
 
-```{r Overrepresentation analyses}
-pathwayDir <- file.path(outputDir, "pathways")
-dir.create(pathwayDir)
+```{r plotting dmgs cvn}
+CDvNon_CD_gr <- makeGRangesFromDataFrame(CDvNon_CD, keep.extra.columns = T, start.field = "pos", end.field = "pos", seqnames.field = "chr")
 
-require(missMethyl)
-
-top100_CDvNon_CD_kegg <- gometh(sig.cpg = rownames(CDvNon_CD)[1:100], all.cpg = rownames(gmset_anno), collection = "KEGG", array.type = "450K")
-top100_CDvNon_CD_kegg <- top100_CDvNon_CD_kegg[order(top100_CDvNon_CD_kegg$P.DE),]
-write.csv(top100_CDvNon_CD_kegg, file.path(pathwayDir, "CDvNon_CD_top100_kegg.csv"))
-
-top100_ACTvREM_kegg <- gometh(sig.cpg = rownames(ACTvREM)[1:100], all.cpg = rownames(gmset_anno), collection = "KEGG", array.type = "450K")
-top100_ACTvREM_kegg <- top100_ACTvREM_kegg[order(top100_ACTvREM_kegg$P.DE),]
-write.csv(top100_ACTvREM_kegg, file.path(pathwayDir, "ACTvREM_top100_kegg.csv"))
+for(i in 1:length(CDvNon_CD_ma_sig$Gene)){
+  Cairo(width = 1500, height = 1000, type = "pdf", file = file.path(dmgDir, paste0(i, "_", CDvNon_CD_ma_sig$Gene[i], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
+  print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[i], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
+  dev.off()
+}
 ```
 
-```{r DMR analysis}
-dmrDir <- file.path(outputDir, "dmrs")
-dir.create(dmrDir)
+```{r gene set analyses cvn}
+require(DOSE)
+require(Biobase)
+require(org.Hs.eg.db)
+require(clusterProfiler)
+
+CDvNon_CD_ma_sig$Entrez <- mapIds(Homo.sapiens, 
+                                  keys = as.character(CDvNon_CD_ma_sig$Gene),
+                                  column = "ENTREZID",
+                                  keytype = "SYMBOL",
+                                  multiVals = "first")
+CDvNon_CD_ma_sig["C6orf25", "Entrez"] <- 80739
+CDvNon_CD_ma_sig["C22orf26", "Entrez"] <- 55267
+CDvNon_CD_ma_sig["PNMAL2", "Entrez"] <- 57469
+CDvNon_CD_ma_sig["C10orf26", "Entrez"] <- 54838
+
+CDvNon_CD_ma_sig_kegg <- enrichKEGG(gene = CDvNon_CD_ma_sig$Entrez,
+                                    organism = 'hsa')
+```
+
+```{r DMR analysis cvn}
+dmrcvnDir <- file.path(dmrDir, "cvn")
+dir.create(dmrcvnDir)
 
 require(DMRcate)
 dmr_anno_CDvNon_CD <- cpg.annotate(object = as.matrix(mvals_filtered),
@@ -321,10 +388,8 @@ dmr_anno_CDvNon_CD <- cpg.annotate(object = as.matrix(mvals_filtered),
                                    arraytype = "450K",
                                    what = "M",
                                    analysis.type = "differential",
-                                   design = design_mat,
-                                   contrasts = T,
-                                   cont.matrix = contrast_mat,
-                                   coef = "CDvNon_CD")
+                                   coef = "Status1CD",
+                                   design = design_cvn)
 dmr_CDvNon_CD <- dmrcate(dmr_anno_CDvNon_CD, lambda = 1000, C = 2, min.cpgs = 3, mc.cores = 8, pcutoff = 0.05)
 dmr_CDvNon_CD_gr <- extractRanges(dmr_CDvNon_CD, genome = "hg19")
 
@@ -403,73 +468,214 @@ hg19togrch38 <- import.chain("~/archive/common_data/liftover_chains/hg19ToHg38.o
 dmr_CDvNon_CD_gr_grch38 <- liftOver(dmr_CDvNon_CD_gr[1], hg19togrch38)
 ```
 
-Given that no systematic differences can be observed, we next questioned whether any positions were variably affected (e.g. the variance is increased in one group versus the other)
+##ACT vs REM
 
-```{r VMPs}
-vmpDir <- file.path(outputDir, "vmps")
-dir.create(vmpDir)
+```{r DM analyses setup avr}
+dmpavrDir <- file.path(dmpDir, "avr")
+dir.create(dmpavrDir)
 
-require(parallel)
-require(car)
-require(NDlib)
-require(Cairo)
+pdata_avr <- pdata_filtered[pdata_filtered$Status1 == "CD", ]
+pdata_avr$Severity <- factor(pdata_avr$Severity, c("Remissive", "Active"))
+mvals_avr <- mvals_filtered[,rownames(pdata_avr)]
+betas_avr <- betas_filtered[,rownames(pdata_avr)]
 
-cl <- makeCluster(detectCores()-2)
+design_avr <- model.matrix(~Severity + Age, data = pdata_avr)
 
-mult.var.test <- function(i, factor_interest, method = c("levene", "bartlett", "fligner")){
-  method <- match.arg(method)
-  
-  if(method == "levene"){
-    pval <- leveneTest(y = i, group = factor_interest)$Pr[1]
-    statistic <- leveneTest(y = i, group = factor_interest)$F[1]
-  } else if(method == "bartlett"){
-    pval <- bartlett.test(x = i, g = factor_interest)$"p.value"
-    statistic <- as.numeric(bartlett.test(x = i, g = factor_interest)$"statistic")
-  } else if(method == "fligner"){
-    pval <- fligner.test(x = i, g = factor_interest)$"p.value"
-    statistic <- fligner.test(x = i, g = factor_interest)$"statistic"
-  }
-  
-  results <- data.frame(pval = pval, statistic = statistic)
-  return(results)
-}
+mvals_lmfit_avr <- lmFit(mvals_avr, design = design_avr)
+betas_lmfit_avr <- lmFit(betas_avr, design = design_avr)
 
-clusterEvalQ(cl, library(car))
+mvals_ebayes_avr <- eBayes(mvals_lmfit_avr)
+betas_ebayes_avr <- eBayes(betas_lmfit_avr)
 
-var_CDvNon_CD <- parApply(cl = cl, X = mvals_filtered, MARGIN = 1, FUN = mult.var.test, factor_interest = pdata_filtered$Status1)
-var_ACTvREM <- parApply(cl = cl, X = mvals_filtered, MARGIN = 1, FUN = mult.var.test, factor_interest = pdata_filtered$Severity)
-stopCluster(cl)
+ACTvREM <- topTable(mvals_ebayes_avr, coef = "SeverityActive", number = "Inf", adjust.method = "BH")
+ACTvREM <- cbind(ACTvREM, Beta = coefficients(betas_ebayes_avr)[rownames(ACTvREM), "SeverityActive"], gmset_anno[rownames(ACTvREM), ])
 
-#CDvNon_CD
-var_CDvNon_CD_df <- do.call(rbind, var_CDvNon_CD)
-var_CDvNon_CD_df$padj <- p.adjust(var_CDvNon_CD_df$pval)
-var_CDvNon_CD_df <- var_CDvNon_CD_df[order(var_CDvNon_CD_df$pval),]
-var_CDvNon_CD_df$Gene <- gmset_anno_gr[rownames(var_CDvNon_CD_df),]$UCSC_RefGene_Name
-var_CDvNon_CD_sig <- var_CDvNon_CD_df[var_CDvNon_CD_df$padj < 0.05,]
-
-write.csv(var_CDvNon_CD_df, file.path(vmpDir, "vmp_CDvNon_CD.csv"))
-
-#ACTvREM
-var_ACTvREM_df <- do.call(rbind, var_ACTvREM)
-var_ACTvREM_df$padj <- p.adjust(var_ACTvREM_df$pval)
-var_ACTvREM_df <- var_ACTvREM_df[order(var_ACTvREM_df$pval),]
-var_ACTvREM_df$Gene <- gmset_anno_gr[rownames(var_ACTvREM_df),]$UCSC_RefGene_Name
-var_ACTvREM_sig <- var_ACTvREM_df[var_ACTvREM_df$padj < 0.05,]
-
-write.csv(var_ACTvREM_df, file.path(vmpDir, "vmp_ACTvREM.csv"))
+write.csv(ACTvREM, file.path(dmpavrDir, "ACTvREM.csv"))
 
 for(i in 1:10){
-  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(vmpDir, paste0(i, "_", rownames(var_CDvNon_CD_df)[i], "_CDvNon_CD.pdf")), bg = "white", units = "px", dpi = 120)
-  print(cpg_strip_plot(cpg_num = rownames(var_CDvNon_CD_df)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
-  dev.off()
-  
-  Cairo(width = 1000, height = 1000, type = "pdf", file = file.path(vmpDir, paste0(i, "_", rownames(var_ACTvREM_df)[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
-  print(cpg_strip_plot(cpg_num = rownames(var_ACTvREM_df)[i], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F))
+  Cairo(width = 600, height = 800, type = "pdf", file = file.path(dmpavrDir, paste0(i, "_", rownames(ACTvREM)[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
+  print(cpg_strip_plot(cpg_num = rownames(ACTvREM)[i], betas = betas_avr, factor_interest = pdata_avr$Severity, enlarged = F, type = "SE", legend = F) + 
+          theme(panel.grid.major=element_blank(),
+                panel.grid.minor=element_blank()))
   dev.off()
 }
 ```
 
-#Primers DMR
+```{r Heatmap avr}
+hm_anno_t50_avr <- data.frame(Status = pdata_avr$Severity, row.names = rownames(pdata_avr))
+
+betas_t50_avr <- betas_avr[rownames(ACTvREM[1:50,]),]
+betas_t50_avr_dm <- betas_t50_avr-rowMeans(betas_t50_avr)
+
+pheatmap(betas_t50_avr_dm, annotation_col = hm_anno_t50_avr)
+```
+
+```{r Differentially methylated genes avr}
+dmgavrDir <- file.path(dmgDir, "avr")
+dir.create(dmgavrDir)
+
+ACTvREM_genes <- lapply(strsplit(ACTvREM$UCSC_RefGene_Name, ";"), unique)
+names(ACTvREM_genes) <- rownames(ACTvREM)
+ACTvREM_genes_nz <- ACTvREM_genes[which(lapply(ACTvREM_genes, length) != 0)]
+
+ACTvREM_genes_nz_df <- data.frame(CpG = gsub("(cg[0-9]{8})[0-9]", "\\1", names(unlist(ACTvREM_genes_nz))), 
+                                  Gene = unlist(ACTvREM_genes_nz))
+ACTvREM_genes_nz_df$pvalue <- ACTvREM[ACTvREM_genes_nz_df$CpG, "P.Value"]
+
+ACTvREM_genes_nz_list <- split(ACTvREM_genes_nz_df, ACTvREM_genes_nz_df$Gene)
+
+ACTvREM_fisher <- lapply(ACTvREM_genes_nz_list, function(gene){
+  aggregation::fisher(gene$pvalue)
+})
+
+rm(ACTvREM_genes_nz_list)
+
+ACTvREM_ma <- data.frame(Gene = names(ACTvREM_fisher),
+                         Fisher_pval = unlist(ACTvREM_fisher))
+ACTvREM_ma$padj <- p.adjust(ACTvREM_ma$Fisher_pval)
+ACTvREM_ma <- ACTvREM_ma[order(ACTvREM_ma$Fisher_pval),]
+ACTvREM_ma_sig <- ACTvREM_ma[which(ACTvREM_ma$padj<0.05),]
+
+write.csv(ACTvREM_ma, file.path(dmgavrDir, "ACTvREM.csv"))
+```
+
+```{r plotting dmgs avr}
+ACTvREM_gr <- makeGRangesFromDataFrame(ACTvREM, keep.extra.columns = T, start.field = "pos", end.field = "pos", seqnames.field = "chr")
+
+for(i in 1:length(ACTvREM_ma_sig$Gene)){
+  Cairo(width = 1500, height = 1000, type = "pdf", file = file.path(dmgavrDir, paste0(i, "_", ACTvREM_ma_sig$Gene[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
+  print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[i], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
+  dev.off()
+}
+```
+
+```{r ppi dmgs avr}
+dmgavrppiDir <- file.path(dmgavrDir, "ppi")
+
+ACTvREM_ppi <- read.csv(file.path(dmgavrppiDir, "dmg_avr_interactions.tsv"), sep = "\t")
+
+ACTvREM_ppi <- lapply(ACTvREM_ppi, function(interaction){
+  interaction %>% 
+    dplyr::rename(weight = combined_score,
+                  from = node1,
+                  to = node2) %>%
+    mutate(from = as.character(from),
+           to = as.character(to))
+})
+```
+
+
+```{r DMR analysis avr}
+dmravrDir <- file.path(dmrDir, "avr")
+dir.create(dmravrDir)
+
+require(DMRcate)
+dmr_anno_ACTvREM <- cpg.annotate(object = as.matrix(mvals_avr),
+                                 datatype = "array",
+                                 arraytype = "450K",
+                                 what = "M",
+                                 analysis.type = "differential",
+                                 coef = "SeverityActive",
+                                 design = design_avr)
+dmr_ACTvREM <- dmrcate(dmr_anno_ACTvREM, lambda = 1000, C = 2, min.cpgs = 3, mc.cores = 8, pcutoff = 0.05)
+dmr_ACTvREM_gr <- extractRanges(dmr_ACTvREM, genome = "hg19")
+
+write.csv(as.data.frame(dmr_ACTvREM_gr), file.path(dmrDir, "dmrs_ACTvREM.csv"))
+
+dmr_plot(dmr_gr = dmr_ACTvREM_gr[1], meth_data = betas_avr, anno_gr = gmset_anno_gr, meth_groups = pdata_avr$Severity, flanks = 0)
+```
+
+## Overlap CD vs non-CD and ACT vs REM
+
+```{r dmgs}
+require(ggrepel)
+
+dmg_ol <- merge(CDvNon_CD_ma, ACTvREM_ma, by = "Gene")
+colnames(dmg_ol) <- c("Gene", "Fisher_pval_cvn", "padj_cvn", "Fisher_pval_avr", "padj_avr")
+
+dmg_ol$Significance <- "NS"
+dmg_ol$Significance[dmg_ol$padj_cvn <= 0.05 & dmg_ol$padj_avr <= 0.05] <- "Both"
+dmg_ol$Significance[dmg_ol$padj_cvn <= 0.05 & dmg_ol$padj_avr > 0.05] <- "CD vs non-CD"
+dmg_ol$Significance[dmg_ol$padj_cvn > 0.05 & dmg_ol$padj_avr <= 0.05] <- "CD-active vs CD-remissive"
+dmg_ol$Significance <- factor(dmg_ol$Significance, levels = c("NS", "CD vs non-CD", "CD-active vs CD-remissive", "Both"))
+dmg_ol$euclidian <- sqrt((-log10(dmg_ol$Fisher_pval_cvn))^2+(-log10(dmg_ol$Fisher_pval_avr))^2)
+dmg_ol <- dmg_ol[order(dmg_ol$euclidian, decreasing = T),]
+dmg_ol$label[dmg_ol$Gene %in% c("C6orf25", "NNAT", "BLCAP", "HOXC4")] <- as.character(dmg_ol$Gene[dmg_ol$Gene %in% c("C6orf25", "NNAT", "BLCAP", "HOXC4")])
+
+dmg_ol_plot <- ggplot(dmg_ol, aes(x = -log10(dmg_ol$Fisher_pval_cvn), y = -log10(dmg_ol$Fisher_pval_avr))) +
+  geom_point(aes(col = Significance)) +
+  geom_text_repel(aes(label = label)) +
+  scale_color_manual(values = c(NS = "#D9D5D5", `CD vs non-CD` = "#67d0dd", `CD-active vs CD-remissive` = "#f9665e", Both = "#a885ee")) +
+  labs(title = "Comparison CD vs non-CD with CD-active vs CD-remissive",
+       subtitle = "-log10(p-value)") +
+  xlab("CD vs non-CD") +
+  ylab("CD-active vs CD-remissive") +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank())
+```
+
+```{r overlapping dmgs}
+nnat_gr <- makeGRangesFromDataFrame(ACTvREM[grep("NNAT", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+
+nnat_plot <- dmr_plot(dmr_gr = nnat_gr, 
+                      meth_data = betas_filtered, 
+                      anno_gr = gmset_anno_gr, 
+                      meth_groups = pdata_filtered$Severity, 
+                      flanks = 0) +
+  labs(title = "NNAT/BLCAP", 
+       subtitle = "chr20:36148133-36151683")
+
+mpig6b_gr <- makeGRangesFromDataFrame(ACTvREM[grep("C6orf25", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+
+mpig6b_plot <- dmr_plot(dmr_gr = mpig6b_gr, 
+                        meth_data = betas_filtered, 
+                        anno_gr = gmset_anno_gr, 
+                        meth_groups = pdata_filtered$Severity, 
+                        flanks = 0) +
+  labs(title = "C6orf25/MPIG6B", 
+       subtitle = "chr6:31689996-31692808")
+
+hoxc4_gr <- makeGRangesFromDataFrame(ACTvREM[grep("HOXC4", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+
+hoxc4_plot <- dmr_plot(dmr_gr = hoxc4_gr, 
+                        meth_data = betas_filtered, 
+                        anno_gr = gmset_anno_gr, 
+                        meth_groups = pdata_filtered$Severity, 
+                        flanks = 0) +
+  labs(title = "HOXC4", 
+       subtitle = "chr6:31689996-31692808")
+
+
+```
+
+# Methyl-Seq
+
+```{r gse73788 import and processing}
+gse73788 <- read.csv(file.path("data", "methylseq", "GSE73788_Mo1_Mo2_Mo3_merged.csv"), stringsAsFactors = F)
+gse73788$seqnames <- gsub("(chr[0-9XYM]+):[0-9]+-[0-9]+", "\\1", gse73788$Position)
+gse73788$start <- as.numeric(gsub("chr[0-9XYM]+:([0-9]+)-[0-9]+", "\\1", gse73788$Position))
+gse73788$end <- as.numeric(gsub("chr[0-9XYM]+:[0-9]+-([0-9]+)", "\\1", gse73788$Position))
+gse73788_gr <- makeGRangesFromDataFrame(gse73788, keep.extra.columns = T)
+```
+
+```{r}
+goi_gse73788 <- gse73788[grep("NNAT", gse73788$Gene),]
+goi_gse73788$Cpgpos <- goi_gse73788$start+3
+goi_gse73788_df <- goi_gse73788[,c("Mo1", "Mo2", "Mo3", "Cpgpos")]
+
+goi_gse73788_melt <- reshape2::melt(goi_gse73788_df, id.vars = c("Cpgpos"))
+
+ggplot(goi_gse73788_melt, aes(x = Cpgpos, y = value, col = variable)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()
+  
+```
+
+
+# Primers DMR
+
 ```{r primer}
 fig1propDir <- file.path(proposalDir, "fig1")
 dir.create(fig1propDir)
@@ -549,8 +755,8 @@ library(htmltidy)
 methprimer <- readHTMLTable("/home/ayliyim/archive/projects/PRJ0000002_CDMON/data/primers/methprimer_dmr.html")
 ```
 
-
 #Figures
+
 ```{r Figure 1}
 require(ggpubr)
 require(Cairo)
@@ -558,18 +764,52 @@ require(Cairo)
 fig1Dir <- file.path(manuscriptDir, "fig1")
 dir.create(fig1Dir)
 
-fig1A <- cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[1], betas = betas_filtered, factor_interest = pdata_filtered$Status1, enlarged = F, type = "SE") + theme(legend.pos = "none") + labs(subtitle = paste(CDvNon_CD$chr[1], CDvNon_CD$pos[1], sep = ":"))
-
-fig1B <- dmr_plot(dmr_gr = range(cg17206772_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Status1, highlight = CDvNon_CD$pos[1]) + theme(legend.pos = "bottom", legend.title = element_blank())
-
-fig1 <- ggarrange(fig1A, fig1B, ncol = 2, labels = "AUTO", common.legend = T, legend = "bottom", align = "h")
-
-Cairo(width = 1000, height = 750, type = "png", file = file.path(fig1Dir, "fig1.png"), bg = "white", units = "px", dpi = 120)
-print(fig1)
+#A
+Cairo(width = 1250, height = 1500, type = "pdf", file = file.path(fig1Dir, "fig1a.pdf"), bg = "white", units = "px", dpi = 120)
+pheatmap(betas_t50_cvn_dm, annotation_col = hm_anno_t50_cvn, show_colnames = F)
 dev.off()
 
-Cairo(width = 2000, height = 1500, type = "pdf", file = file.path(fig1Dir, "fig1.pdf"), bg = "white", units = "px", dpi = 120)
-print(fig1)
+#B
+CDvNon_CD_ma_t100 <- CDvNon_CD_ma[1:100,]
+CDvNon_CD_ma_t100$Gene <- factor(CDvNon_CD_ma_t100$Gene, levels = CDvNon_CD_ma_t100$Gene)
+CDvNon_CD_ma_t100$Significance <- CDvNon_CD_ma_t100$padj<0.05
+
+Cairo(width = 3000, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1b.pdf"), bg = "white", units = "px", dpi = 120)
+ggplot(CDvNon_CD_ma_t100, aes(x = Gene, y = -log10(Fisher_pval), fill = Significance)) +
+  geom_bar(stat = "identity") +
+  ylab("-log10(p-value)") +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.x = element_blank())
+dev.off()
+
+#C
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c1.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[1], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
+dev.off()
+
+wdfy4 <- CDvNon_CD_gr[grep("WDFY4", CDvNon_CD_gr$UCSC_RefGene_Name),]
+wdfy4 <- wdfy4[start(wdfy4) < 49920000,]
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c2.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[2], tophits_gr = wdfy4, smooth = T, significance = F))
+dev.off()
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c3.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[3], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
+dev.off()
+
+gstt1 <- CDvNon_CD_gr[grep("GSTT1", CDvNon_CD_gr$UCSC_RefGene_Name),]
+gstt1 <- gstt1[start(gstt1) > 24382000,]
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c4.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[4], tophits_gr = gstt1, smooth = F, significance = F))
+dev.off()
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c5.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[5], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
 dev.off()
 ```
 
@@ -577,18 +817,45 @@ dev.off()
 fig2Dir <- file.path(manuscriptDir, "fig2")
 dir.create(fig2Dir)
 
-fig2A <- cpg_strip_plot(cpg_num = rownames(CDvNon_CD)[2], betas = betas_filtered, factor_interest = pdata_filtered$Status1, enlarged = F, type = "SE") + theme(legend.pos = "none") + labs(subtitle = paste(CDvNon_CD$chr[2], CDvNon_CD$pos[2], sep = ":"))
-
-fig2B <- dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Status1, highlight = CDvNon_CD$pos[2]) + theme(legend.pos = "bottom", legend.title = element_blank())
-
-fig2 <- ggarrange(fig2A, fig2B, ncol = 2, labels = "AUTO", common.legend = T, legend = "bottom", align = "h")
-
-Cairo(width = 1000, height = 750, type = "png", file = file.path(fig2Dir, "fig2.png"), bg = "white", units = "px", dpi = 120)
-print(fig2)
+#A
+Cairo(width = 1250, height = 1500, type = "pdf", file = file.path(fig2Dir, "fig2a.pdf"), bg = "white", units = "px", dpi = 120)
+pheatmap(betas_t50_avr_dm, annotation_col = hm_anno_t50_avr, show_colnames = F)
 dev.off()
 
-Cairo(width = 2000, height = 1500, type = "pdf", file = file.path(fig2Dir, "fig2.pdf"), bg = "white", units = "px", dpi = 120)
-print(fig2)
+#B
+ACTvREM_ma_t100 <- ACTvREM_ma[1:100,]
+ACTvREM_ma_t100$Gene <- factor(ACTvREM_ma_t100$Gene, levels = ACTvREM_ma_t100$Gene)
+ACTvREM_ma_t100$Significance <- ACTvREM_ma_t100$padj<0.05
+
+Cairo(width = 3000, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2b.pdf"), bg = "white", units = "px", dpi = 120)
+ggplot(ACTvREM_ma_t100, aes(x = Gene, y = -log10(Fisher_pval), fill = Significance)) +
+  geom_bar(stat = "identity") +
+  ylab("-log10(p-value)") +
+  theme_bw() +
+  theme(panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.x = element_blank())
+dev.off()
+
+#C
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c1.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[1], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
+dev.off()
+
+serpinf1 <- ACTvREM_gr[grep("SERPINF1", ACTvREM_gr$UCSC_RefGene_Name),]
+serpinf1 <- serpinf1[start(serpinf1) < 1666000 & start(serpinf1) > 1664400,]
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c2.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[3], tophits_gr = serpinf1, smooth = T, significance = F))
+dev.off()
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c3.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[4], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
+dev.off()
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c4.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[5], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
 dev.off()
 ```
 
@@ -597,18 +864,35 @@ dev.off()
 fig3Dir <- file.path(manuscriptDir, "fig3")
 dir.create(fig3Dir)
 
-fig3A <- cpg_strip_plot(cpg_num = rownames(ACTvREM)[2], betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE") + theme(legend.pos = "none") + labs(subtitle = paste(ACTvREM$chr[2], ACTvREM$pos[2], sep = ":"))
-
-fig3B <- dmr_plot(dmr_gr = range(cg06521852_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, highlight = ACTvREM$pos[2]) + theme(legend.pos = "bottom", legend.title = element_blank())
-
-fig3 <- ggarrange(fig3A, fig3B, ncol = 2, labels = "AUTO", common.legend = T, legend = "bottom", align = "h")
-
-Cairo(width = 1000, height = 750, type = "png", file = file.path(fig3Dir, "fig3.png"), bg = "white", units = "px", dpi = 120)
-print(fig3)
+#A
+Cairo(width = 1500, height = 1000, type = "pdf", file = file.path(fig3Dir, "fig3a.pdf"), bg = "white", units = "px", dpi = 120)
+print(dmg_ol_plot)
 dev.off()
 
-Cairo(width = 2000, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3.pdf"), bg = "white", units = "px", dpi = 120)
-print(fig3)
+#B
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig3Dir, "fig3b.pdf"), bg = "white", units = "px", dpi = 120)
+print(nnat_plot)
+dev.off()
+
+#C
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig3Dir, "fig3c.pdf"), bg = "white", units = "px", dpi = 120)
+print(mpig6b_plot)
+dev.off()
+
+#D
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig3Dir, "fig3d.pdf"), bg = "white", units = "px", dpi = 120)
+print(hoxc4_plot)
+dev.off()
+
+
+```
+
+```{r Figure S1}
+figS1Dir <- file.path(manuscriptDir, "figS1")
+dir.create(figS1Dir)
+
+Cairo(width = 1000, height = 750, type = "pdf", file = file.path(figS1Dir, "figS1.pdf"), bg = "white", units = "px", dpi = 120)
+print(mvals_filtered_svd_plotobj)
 dev.off()
 ```
 
