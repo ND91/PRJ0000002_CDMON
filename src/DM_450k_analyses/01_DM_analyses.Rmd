@@ -32,6 +32,7 @@ rgset <- read.metharray.exp(targets = samplesheet)
 ```{r bespoke functions}
 source(file.path("src", "dmr_plot.R"))
 source(file.path("src", "dmg_plot.R"))
+source(file.path("src", "dmcomp_plot.R"))
 ```
 
 Date the output directory.
@@ -616,40 +617,160 @@ dmg_ol_plot <- ggplot(dmg_ol, aes(x = -log10(dmg_ol$Fisher_pval_cvn), y = -log10
 ```
 
 ```{r overlapping dmgs}
+#NNAT and BLCAP
 nnat_gr <- makeGRangesFromDataFrame(ACTvREM[grep("NNAT", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+nnat_gr <- nnat_gr[start(nnat_gr) > 36148500 & start(nnat_gr) < 36150000,]
 
-nnat_plot <- dmr_plot(dmr_gr = nnat_gr, 
-                      meth_data = betas_filtered, 
-                      anno_gr = gmset_anno_gr, 
-                      meth_groups = pdata_filtered$Severity, 
-                      flanks = 0) +
-  labs(title = "NNAT/BLCAP", 
-       subtitle = "chr20:36148133-36151683")
+nnat_plot <- dmcomp_plot(gene_of_interest = "NNAT",
+                         anno_gr = gmset_anno_gr,
+                         tophits1 = CDvNon_CD,
+                         tophits2 = ACTvREM,
+                         comparison1_name = "CD vs non-CD",
+                         comparison2_name = "CD-active vs CD-remissive",
+                         meth_data = betas_filtered,
+                         meth_groups = pdata_filtered$Severity,
+                         ylim = NULL,
+                         smooth_m = F)
+nnat_enlarged_plot <- dmr_plot(dmr_gr = nnat_gr, 
+                               meth_data = betas_filtered, 
+                               anno_gr = gmset_anno_gr, 
+                               meth_groups = pdata_filtered$Severity, 
+                               flanks = 0, 
+                               rug = F) +
+  scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
+  theme(axis.title.y = element_blank(),
+        legend.pos = "none",
+        plot.title = element_blank(),
+        plot.subtitle = element_blank())
 
+#MPIG6B (C6orf25)
 mpig6b_gr <- makeGRangesFromDataFrame(ACTvREM[grep("C6orf25", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+mpig6b_gr <- mpig6b_gr[start(mpig6b_gr) > 31691000 & start(mpig6b_gr) < 31692000,]
 
-mpig6b_plot <- dmr_plot(dmr_gr = mpig6b_gr, 
-                        meth_data = betas_filtered, 
-                        anno_gr = gmset_anno_gr, 
-                        meth_groups = pdata_filtered$Severity, 
-                        flanks = 0) +
-  labs(title = "C6orf25/MPIG6B", 
-       subtitle = "chr6:31689996-31692808")
+mpig6b_plot <- dmcomp_plot(gene_of_interest = "C6orf25",
+                           anno_gr = gmset_anno_gr,
+                           tophits1 = CDvNon_CD,
+                           tophits2 = ACTvREM,
+                           comparison1_name = "CD vs non-CD",
+                           comparison2_name = "CD-active vs CD-remissive",
+                           meth_data = betas_filtered,
+                           meth_groups = pdata_filtered$Severity,
+                           ylim = NULL,
+                           smooth_m = F)
+mpig6b_enlarged_plot <- dmr_plot(dmr_gr = mpig6b_gr, 
+                                 meth_data = betas_filtered, 
+                                 anno_gr = gmset_anno_gr, 
+                                 meth_groups = pdata_filtered$Severity, 
+                                 flanks = 0, 
+                                 rug = F) +
+  scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
+  theme(axis.title.y = element_blank(),
+        legend.pos = "none",
+        plot.title = element_blank(),
+        plot.subtitle = element_blank())
 
+# HOXC4
 hoxc4_gr <- makeGRangesFromDataFrame(ACTvREM[grep("HOXC4", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+hoxc4_gr <- hoxc4_gr[start(hoxc4_gr) > 54445000 & start(hoxc4_gr) < 54450000,]
 
-hoxc4_plot <- dmr_plot(dmr_gr = hoxc4_gr, 
-                        meth_data = betas_filtered, 
-                        anno_gr = gmset_anno_gr, 
-                        meth_groups = pdata_filtered$Severity, 
-                        flanks = 0) +
-  labs(title = "HOXC4", 
-       subtitle = "chr6:31689996-31692808")
-
-
+hoxc4_plot <- dmcomp_plot(gene_of_interest = "HOXC4",
+                          anno_gr = gmset_anno_gr,
+                          tophits1 = CDvNon_CD,
+                          tophits2 = ACTvREM,
+                          comparison1_name = "CD vs non-CD",
+                          comparison2_name = "CD-active vs CD-remissive",
+                          meth_data = betas_filtered,
+                          meth_groups = pdata_filtered$Severity,
+                          ylim = NULL,
+                          smooth_m = F)
+hoxc4_enlarged_plot <- dmr_plot(dmr_gr = hoxc4_gr, 
+                                meth_data = betas_filtered, 
+                                anno_gr = gmset_anno_gr, 
+                                meth_groups = pdata_filtered$Severity, 
+                                flanks = 0, 
+                                rug = F) +
+  scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
+  theme(axis.title.y = element_blank(),
+        legend.pos = "none",
+        plot.title = element_blank(),
+        plot.subtitle = element_blank())
 ```
 
-# Methyl-Seq
+```{r GPR146}
+gpr146_gr <- makeGRangesFromDataFrame(ACTvREM[grep("GPR146", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+
+gpr146_gr[start(gpr146_gr) > 1096000 & start(gpr146_gr) < 1096750,]
+
+gpr146_plot <- dmcomp_plot(gene_of_interest = "GPR146",
+                           anno_gr = gmset_anno_gr,
+                           tophits1 = CDvNon_CD,
+                           tophits2 = ACTvREM,
+                           comparison1_name = "CD vs non-CD",
+                           comparison2_name = "CD-active vs CD-remissive",
+                           meth_data = betas_filtered,
+                           meth_groups = pdata_filtered$Severity,
+                           ylim = NULL,
+                           smooth_m = F)
+
+Cairo(width = 1500, height = 1500, type = "pdf", file = "GPR146_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+print(gpr146_plot)
+dev.off()
+
+Cairo(width = 600, height = 600, type = "pdf", file = "GPR146_cg20603222_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+cpg_strip_plot(cpg_num = "cg20603222", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
+dev.off()
+
+Cairo(width = 600, height = 600, type = "pdf", file = "GPR146_cg26224354_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+cpg_strip_plot(cpg_num = "cg26224354", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
+dev.off()
+```
+
+```{r SP140}
+sp140_gr <- makeGRangesFromDataFrame(ACTvREM[grep("SP140", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
+
+sp140_gr <- sp140_gr[start(sp140_gr) >= 231090500,]
+
+sp140_plot <- dmcomp_plot(gene_of_interest = "SP140",
+                           anno_gr = sp140_gr,
+                           tophits1 = CDvNon_CD,
+                           tophits2 = ACTvREM,
+                           comparison1_name = "CD vs non-CD",
+                           comparison2_name = "CD-active vs CD-remissive",
+                           meth_data = betas_filtered,
+                           meth_groups = pdata_filtered$Severity,
+                           ylim = NULL,
+                           smooth_m = F)
+
+Cairo(width = 1500, height = 1500, type = "pdf", file = "SP140_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+print(sp140_plot)
+dev.off()
+
+Cairo(width = 600, height = 600, type = "pdf", file = "SP140_cg03887528_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+cpg_strip_plot(cpg_num = "cg03887528", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
+dev.off()
+
+Cairo(width = 600, height = 600, type = "pdf", file = "SP140_cg05564251_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+cpg_strip_plot(cpg_num = "cg05564251", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
+dev.off()
+
+Cairo(width = 600, height = 600, type = "pdf", file = "SP140_cg04579254_monocytes.pdf", bg = "white", units = "px", dpi = 120)
+cpg_strip_plot(cpg_num = "cg04579254", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
+dev.off()
+```
+
+# Public data
+
+```{r setup public data}
+publicDir <- file.path(outputDir, "public")
+dir.create(publicDir)
+```
+
+## Methyl-Seq: GSE73788
+
+```{r setup methylseq}
+mseqDir <- file.path(publicDir, "methylseq")
+dir.create(mseqDir)
+```
 
 ```{r gse73788 import and processing}
 gse73788 <- read.csv(file.path("data", "methylseq", "GSE73788_Mo1_Mo2_Mo3_merged.csv"), stringsAsFactors = F)
@@ -657,22 +778,29 @@ gse73788$seqnames <- gsub("(chr[0-9XYM]+):[0-9]+-[0-9]+", "\\1", gse73788$Positi
 gse73788$start <- as.numeric(gsub("chr[0-9XYM]+:([0-9]+)-[0-9]+", "\\1", gse73788$Position))
 gse73788$end <- as.numeric(gsub("chr[0-9XYM]+:[0-9]+-([0-9]+)", "\\1", gse73788$Position))
 gse73788_gr <- makeGRangesFromDataFrame(gse73788, keep.extra.columns = T)
+
+gse73788_meth <- data.frame(gse73788[, c("Mo1", "Mo2", "Mo3")])
+gse73788_meth_l2i <- -log2(gse73788_meth+1)
+gse73788_groups <- c("Classical", "Intermediate", "Non-classical")
 ```
 
-```{r}
-goi_gse73788 <- gse73788[grep("NNAT", gse73788$Gene),]
-goi_gse73788$Cpgpos <- goi_gse73788$start+3
-goi_gse73788_df <- goi_gse73788[,c("Mo1", "Mo2", "Mo3", "Cpgpos")]
+```{r visualize}
+dmgs_sig <- union(ACTvREM_ma_sig$Gene, CDvNon_CD_ma_sig$Gene)
 
-goi_gse73788_melt <- reshape2::melt(goi_gse73788_df, id.vars = c("Cpgpos"))
-
-ggplot(goi_gse73788_melt, aes(x = Cpgpos, y = value, col = variable)) +
-  geom_point() +
-  geom_smooth() +
-  theme_bw()
+for(i in 41:length(dmgs_sig)){
+  goi_gr <- range(gmset_anno_gr[grep(paste0("(^|;)", dmgs_sig[i], "($|;)"), gmset_anno_gr$UCSC_RefGene_Name),], ignore.strand = T)
   
+  Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(mseqDir, paste0(dmgs_sig[i], ".pdf")), bg = "white", units = "px", dpi = 120)
+  print(dmrma_plot(roi_gr = goi_gr,
+                   ownmeth_data = betas_filtered,
+                   ownmeth_anno_gr = gmset_anno_gr,
+                   ownmeth_groups = pdata_filtered$Severity,
+                   pubmeth_data = gse73788_meth_l2i,
+                   pubmeth_anno_gr = gse73788_gr,
+                   pubmeth_groups = gse73788_groups))
+  dev.off()
+}
 ```
-
 
 # Primers DMR
 
@@ -870,18 +998,30 @@ print(dmg_ol_plot)
 dev.off()
 
 #B
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig3Dir, "fig3b.pdf"), bg = "white", units = "px", dpi = 120)
-print(nnat_plot)
-dev.off()
-
-#C
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig3Dir, "fig3c.pdf"), bg = "white", units = "px", dpi = 120)
+Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3b1.pdf"), bg = "white", units = "px", dpi = 120)
 print(mpig6b_plot)
 dev.off()
 
+Cairo(width = 1500, height = 500, type = "pdf", file = file.path(fig3Dir, "fig3b2.pdf"), bg = "white", units = "px", dpi = 120)
+print(mpig6b_enlarged_plot)
+dev.off()
+
+#C
+Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3c1.pdf"), bg = "white", units = "px", dpi = 120)
+print(nnat_plot)
+dev.off()
+
+Cairo(width = 1500, height = 500, type = "pdf", file = file.path(fig3Dir, "fig3c2.pdf"), bg = "white", units = "px", dpi = 120)
+print(nnat_enlarged_plot)
+dev.off()
+
 #D
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig3Dir, "fig3d.pdf"), bg = "white", units = "px", dpi = 120)
+Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3d1.pdf"), bg = "white", units = "px", dpi = 120)
 print(hoxc4_plot)
+dev.off()
+
+Cairo(width = 1500, height = 500, type = "pdf", file = file.path(fig3Dir, "fig3d2.pdf"), bg = "white", units = "px", dpi = 120)
+print(hoxc4_enlarged_plot)
 dev.off()
 
 

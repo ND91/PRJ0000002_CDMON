@@ -1,4 +1,4 @@
-dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2_gr, comparison1_name, comparison2_name, meth_data, meth_groups, ylim = NULL, smooth_diff = T, smooth_m = T){
+dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2, comparison1_name, comparison2_name, meth_data, meth_groups, ylim = NULL, smooth_diff = T, smooth_m = T){
   require(ggbio)
   require(reshape2)
   require(Homo.sapiens)
@@ -23,10 +23,12 @@ dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2_gr, compar
     geom_hline(yintercept = 0) +
     #geom_line(alpha = 0.5) +
     ylab("% Methylation difference") +
+    scale_color_manual(values=c("#008000", "#ff00ff")) +
     theme_bw() +
     theme(legend.pos = "top",
           panel.grid.major = element_blank(),
           panel.grid.minor = element_blank(),
+          axis.title.y = element_blank(),
           text = element_text(size = 12))
   
   if(!is.null(ylim)) mdiff_track <- mdiff_track + ylim(ylim)
@@ -47,20 +49,20 @@ dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2_gr, compar
     geom_point(aes(col = Group, group = Group), alpha = 0.1) +
     #coord_cartesian(xlim = c(start(plotrange), end(plotrange))) +
     #ylim(0,1) +
+    scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
     ylab("% Methylation") +
     theme_bw() +
-    theme(legend.pos = "top",
+    theme(legend.pos = "bottom",
           plot.title = element_text(face = "bold"),
-          axis.title = element_text(size = 14, face = "bold"),
           axis.title.x = element_blank(),
-          axis.text = element_text(size = 12),
+          axis.title.y = element_blank(),
           axis.text.x = element_text(angle = 45, hjust = 1),
           legend.title = element_text(size = 14, face = "bold"),
           legend.text = element_text(size = 12),
           panel.grid.major = element_blank(),
           panel.grid.minor = element_blank())
   
-  if(smooth_diff){
+  if(smooth_m){
     m_track <- m_track + geom_smooth(method = "auto", alpha = 0.5, aes(col = Group))
   } else{
     m_track <- m_track + stat_summary(aes(col = Group, group = Group), fun.y = mean, geom = "smooth")
@@ -70,5 +72,5 @@ dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2_gr, compar
   plotobj <- tracks("Gene" = gene_track, 
                     "% Methylation difference" = mdiff_track, 
                     "% Methylation" = m_track,
-                    heights = c(3, 4, 4))
+                    heights = c(3, 5, 5))
 }
