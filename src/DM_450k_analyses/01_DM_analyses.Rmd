@@ -13,6 +13,7 @@ In this report we will perform the differential methylation analyses on CD14+ mo
 require(pheatmap)
 require(minfi)
 require(aggregation)
+require(EmpiricalBrownsMethod)
 
 samplesDir <- file.path("data", "samples")
 commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")

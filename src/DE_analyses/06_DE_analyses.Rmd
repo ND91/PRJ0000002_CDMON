@@ -1,0 +1,189 @@
+---
+title: "Differential expression analyses"
+author: "Andrew Y.F. Li Yim"
+date: "January 17, 2019"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, echo = F, message = F, warning = F}
+require(Cairo)
+require(ggplot2)
+require(plotly)
+
+deaDir <- file.path("output", "02_DE_analyses")
+dir.create(deaDir)
+
+rdsDir <- file.path(deaDir, "rds")
+dir.create(rdsDir)
+
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+```
+
+#Introduction
+
+```{r groups}
+samples <- read.csv(file.path("data", "samples", "samplesheet_gse107011_PRJ0000002_CDMON_v1.csv"), stringsAsFactors = F)
+rownames(samples) <- samples$SRR
+samples$Monocytes <- factor(samples$Monocytes, levels = c("Classical", "Intermediate", "Non-classical"))
+```
+
+#Import and preprocessing
+
+We will perform all analyses using the `DESeq2` package. Previously, we performed read counting using the `featureCount` tool found in the `Subread` package. The `featureCount` tool adds some extra columns, which are not easily parsable, we will therefore ignore these columns for now and source them elsewhere at a later point in time.
+
+```{r count processing, message = F}
+require(DESeq2)
+require(biomaRt)
+
+#Annotations
+enshsbm <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+ens2symbol <- getBM(attributes = c("ensembl_gene_id", "entrezgene_id", "hgnc_symbol"), mart = enshsbm)
+
+#Counts
+gcounts_raw <- read.csv(file.path("output", "02_DE_analyses", "counts", "counts.txt"), sep = "\t", skip = 1)
+gcounts <- gcounts_raw[,c(7:ncol(gcounts_raw))]
+rownames(gcounts) <- gcounts_raw$Geneid
+
+#Remove genes with 0 counts
+gcounts <- gcounts[rowSums(gcounts) != 0,]
+
+colnames(gcounts) <- gsub("^.+\\.(SRR[0-9]+)\\.bam", "\\1", colnames(gcounts))
+gcounts <- gcounts[,rownames(samples)]
+
+#Remove genes with low read counts
+dds <- DESeqDataSetFromMatrix(countData = gcounts,
+                              colData = samples,
+                              design = ~ Monocytes + Source)
+
+dds <- DESeq(dds, test = "LRT", reduced = ~Source)
+
+#Useful for visualization purposes
+rld <- rlog(dds)
+rld_counts <- assay(rld)
+```
+
+#Exploratory data analyses
+
+```{r sample pairwise analysis, fig.width = 10, fig.height = 8, fig.align = "center", message = F, warning = F}
+require(pheatmap)
+edaDir <- file.path(deaDir, "eda")
+dir.create(edaDir)
+
+rld_cor <- cor(rld_counts)
+
+rld_hm_anno <- data.frame(Monocyte = colData(rld)$Monocytes,
+                          Origin = colData(rld)$Source, 
+                          row.names = colnames(rld))
+
+Cairo(file = file.path(edaDir, "pairwise_sample_correlations.pdf"), type = "pdf", units = "px", width = 1200, height = 1000, dpi = 90, bg = "white")
+pheatmap(rld_cor, annotation_row = rld_hm_anno, annotation_col = rld_hm_anno)
+dev.off()
+```
+
+```{r principal component analysis treatment tolerization, fig.width = 10, fig.height = 10, fig.align = "center"}
+rld_dm <- rld_counts-rowMeans(rld_counts)
+
+rld_svd <- svd(t(rld_dm))
+
+#Percentage variance
+rld_svd_pct_var <- round(rld_svd$d/sum(rld_svd$d)*100, 2)
+
+#Plot
+rld_svd_df <- data.frame(PC1 = rld_svd$u[,1],
+                         PC2 = rld_svd$u[,2],
+                         Monocyte = colData(rld)$Monocytes,
+                         Origin = colData(rld)$Source,
+                         Sample = colData(rld)$SRR)
+
+pca_plotobj <- ggplot(rld_svd_df, aes(x = PC1, y = PC2, col = Monocyte, shape = Origin, label = Sample)) +
+  geom_point(size = 3) +
+  theme_bw() +
+  xlab(paste0("PC1 (", rld_svd_pct_var[1], "%)")) +
+  ylab(paste0("PC2 (", rld_svd_pct_var[2], "%)")) +
+  theme(legend.pos = "bottom",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+Cairo(file = file.path(edaDir, "pca.pdf"), type = "pdf", units = "px", width = 1000, height = 1000, dpi = 90, bg = "white")
+print(pca_plotobj)
+dev.off()
+
+ggplotly(pca_plotobj)
+```
+
+# Differential expression analyses
+
+```{r differential analyses setup, message = F, warning = F}
+require(NDlib)
+
+degDir <- file.path(deaDir, "deg")
+dir.create(degDir)
+```
+
+## Differential expression
+
+The goal is to identify genes that are differentially expressed in one of the conditions (classical, non-classical or intermediate monocytes). To that end, we can make use of the likelihood ratio test.
+
+```{r Stimulus vs Sham differential expression, fig.width = 10, fig.height = 6, fig.align = "center", message = F, warning = F}
+lrtDir <- file.path(degDir, "lrt")
+dir.create(lrtDir)
+
+degs_lrt <- as.data.frame(results(dds_me))
+degs_lrt <- degs_lrt[!is.na(degs_lrt$padj),]
+degs_lrt$ENS <- rownames(degs_lrt)
+degs_lrt <- merge(degs_lrt, unique(ens2symbol[,c(1, 3)]), by.x = "ENS", by.y = "ensembl_gene_id", all.x = T, all.y = F)
+degs_lrt <- degs_lrt[order(degs_lrt$pvalue),]
+head(degs_lrt)
+write.csv(degs_lrt, file.path(lrtDir, "degs_lrt.csv"))
+
+lrtsigDir <- file.path(lrtDir, "sig_plots")
+dir.create(lrtsigDir)
+
+print(transcript_strip_plot(id = degs_lrt[i,"ENS"],
+                            counts = assay(rld),
+                            factor_interest = colData(rld)$Monocytes,
+                            y_lab = "log2(Counts)",
+                            title = degs_lrt[i,"mgi_symbol"]))
+```
+
+```{r DMGs}
+dmgdegDir <- file.path(degDir, "dmgdeg")
+dir.create(dmgdegDir)
+
+dmgs_sig_anno <- merge(data.frame(gene = dmgs_sig), ens2symbol, by.x = "gene", by.y = "hgnc_symbol")
+
+degs_lrt_ol <- degs_lrt[which(degs_lrt$ENS %in% dmgs_sig_anno$ensembl_gene_id),]
+
+#Visualization
+rld_counts_dm <- rld_counts-rowMeans(rld_counts)
+
+rld_counts_dm <- rld_counts_dm[,order(colData(rld)$Monocytes)]
+rld_counts_dm_dmg <- rld_counts_dm[rownames(rld_counts_dm) %in% degs_lrt_ol$ENS,]
+
+degs_lrt_ol <- degs_lrt_ol[match(rownames(rld_counts_dm_dmg), degs_lrt_ol$ENS),]
+
+pheatmap_cols <- list(Monocyte = c(Classical = gg_color_hue(3)[1],
+                                   Intermediate = gg_color_hue(3)[2],
+                                   `Non-classical` = gg_color_hue(3)[3]))
+
+degs_lrt_anno <- data.frame(pvalue = -log10(degs_lrt_ol$pvalue), significant = (degs_lrt_ol$pvalue<0.05)*1, row.names = degs_lrt_ol$ENS)
+
+Cairo(file = file.path(dmgdegDir, "dmg_de.pdf"), type = "pdf", units = "px", width = 800, height = 1200, dpi = 90, bg = "white")
+pheatmap(rld_counts_dm_dmg, 
+         annotation_col = rld_hm_anno, 
+         annotation_row = degs_lrt_anno,
+         cluster_cols = F, 
+         labels_row = degs_lrt_ol$hgnc_symbol, 
+         labels_col = colData(rld)[order(colData(rld)$Monocytes), "GSM"],
+         annotation_colors = pheatmap_cols)
+dev.off()
+
+```
