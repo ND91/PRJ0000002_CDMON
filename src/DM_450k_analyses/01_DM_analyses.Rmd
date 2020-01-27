@@ -18,7 +18,7 @@ require(EmpiricalBrownsMethod)
 samplesDir <- file.path("data", "samples")
 commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")
 
-manuscriptDir <- file.path("docs", "manuscript", "200106")
+manuscriptDir <- file.path("docs", "manuscript", "200122")
 dir.create(manuscriptDir)
 proposalDir <- file.path("docs", "proposal")
 dir.create(proposalDir)
@@ -39,44 +39,9 @@ source(file.path("src", "dmcomp_plot.R"))
 Date the output directory.
 
 ```{r output directory}
-outputDir <- file.path("output", "01_DM_450k_analyses", "200106")
+outputDir <- file.path("output", "01_DM_450k_analyses", "200120")
 dir.create(outputDir)
 ```
-
-```{r sample information}
-require(dplyr)
-
-#Age
-samplesheet %>% 
-  select(Age, Severity) %>%
-  group_by(Severity) %>%
-  summarize(mean = mean(Age), stdev = sd(Age))
-
-#CRP
-samplesheet %>% 
-  select(CRP, Severity) %>%
-  group_by(Severity) %>%
-  summarize(mean = mean(CRP, na.rm = T), stdev = sd(CRP, na.rm = T))
-
-#HBI
-samplesheet %>% 
-  select(HBI, Severity) %>%
-  group_by(Severity) %>%
-  summarize(mean = mean(HBI, na.rm = T), stdev = sd(HBI, na.rm = T))
-
-#anti-TNF
-samplesheet %>% 
-  select(aTNF, Severity) %>%
-  group_by(Severity) %>%
-  summarize(n = n(), percentage = sd(aTNF, na.rm = T))
-
-#Corticosteroid
-samplesheet %>% 
-  select(Corticosteroid, Severity) %>%
-  group_by(Severity) %>%
-  summarize(n = n())
-```
-
 
 ```{r Quality control, echo = FALSE}
 edaDir <- file.path(outputDir, "eda")
@@ -336,16 +301,19 @@ CDvNon_CD_genes_nz_df$pvalue <- CDvNon_CD[CDvNon_CD_genes_nz_df$CpG, "P.Value"]
 CDvNon_CD_genes_nz_list <- split(CDvNon_CD_genes_nz_df, CDvNon_CD_genes_nz_df$Gene)
 
 CDvNon_CD_fisher <- lapply(CDvNon_CD_genes_nz_list, function(gene){
-  aggregation::fisher(gene$pvalue)
+  #aggregation::fisher(gene$pvalue)
+  unlist(EmpiricalBrownsMethod::empiricalBrownsMethod(data_matrix = betas_filtered[gene$CpG,],
+                                                      p_values = gene$pvalue,
+                                                      extra_info = T))
 })
 
 rm(CDvNon_CD_genes_nz_list)
 
-CDvNon_CD_ma <- data.frame(Gene = names(CDvNon_CD_fisher),
-                           Fisher_pval = unlist(CDvNon_CD_fisher))
-CDvNon_CD_ma$padj <- p.adjust(CDvNon_CD_ma$Fisher_pval)
-CDvNon_CD_ma <- CDvNon_CD_ma[order(CDvNon_CD_ma$Fisher_pval),]
-CDvNon_CD_ma_sig <- CDvNon_CD_ma[which(CDvNon_CD_ma$padj<0.05),]
+CDvNon_CD_ma <- data.frame(Gene = names(CDvNon_CD_fisher), do.call(rbind, CDvNon_CD_fisher))
+colnames(CDvNon_CD_ma) <- c("Gene", "Brown_pval", "Fisher_pval", "Scale_Factor_C", "DF")
+CDvNon_CD_ma$Brown_padj <- p.adjust(CDvNon_CD_ma$Brown_pval)
+CDvNon_CD_ma <- CDvNon_CD_ma[order(CDvNon_CD_ma$Brown_pval),]
+CDvNon_CD_ma_sig <- CDvNon_CD_ma[which(CDvNon_CD_ma$Brown_padj<0.05),]
 
 write.csv(CDvNon_CD_ma, file.path(dmgDir, "CDvNon_CD.csv"))
 ```
@@ -353,8 +321,8 @@ write.csv(CDvNon_CD_ma, file.path(dmgDir, "CDvNon_CD.csv"))
 ```{r plotting dmgs cvn}
 CDvNon_CD_gr <- makeGRangesFromDataFrame(CDvNon_CD, keep.extra.columns = T, start.field = "pos", end.field = "pos", seqnames.field = "chr")
 
-for(i in 1:length(CDvNon_CD_ma_sig$Gene)){
-  Cairo(width = 1500, height = 1000, type = "pdf", file = file.path(dmgDir, paste0(i, "_", CDvNon_CD_ma_sig$Gene[i], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
+for(i in 10:length(CDvNon_CD_ma_sig$Gene)){
+  Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(i, "_", CDvNon_CD_ma_sig$Gene[i], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
   print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[i], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
   dev.off()
 }
@@ -442,13 +410,13 @@ dmr_summarized$N <- do.call(c, lapply(rownames(dmr_summarized), function(cpg){
 }))
 
 pwr.t.test(
-       n = NULL,                  # Observations in _each_ group
-       d = 2.456725,           
-       sig.level = 0.001,          # Type I probability
-       power = 0.80,              # 1 minus Type II probability
-       type = "two.sample",       # Change for one- or two-sample
-       alternative = "two.sided"
-       )
+  n = NULL,                  # Observations in _each_ group
+  d = 2.456725,           
+  sig.level = 0.001,          # Type I probability
+  power = 0.80,              # 1 minus Type II probability
+  type = "two.sample",       # Change for one- or two-sample
+  alternative = "two.sided"
+)
 
 dmr_summarized <- dmr_summarized[dmr_cpgs,]
 write.csv(dmr_summarized, file.path(powerDir, "power_dmr_cpgs.csv"))
@@ -527,16 +495,19 @@ ACTvREM_genes_nz_df$pvalue <- ACTvREM[ACTvREM_genes_nz_df$CpG, "P.Value"]
 ACTvREM_genes_nz_list <- split(ACTvREM_genes_nz_df, ACTvREM_genes_nz_df$Gene)
 
 ACTvREM_fisher <- lapply(ACTvREM_genes_nz_list, function(gene){
-  aggregation::fisher(gene$pvalue)
+  #aggregation::fisher(gene$pvalue)
+  unlist(EmpiricalBrownsMethod::empiricalBrownsMethod(data_matrix = betas_filtered[gene$CpG,],
+                                                      p_values = gene$pvalue,
+                                                      extra_info = T))
 })
 
 rm(ACTvREM_genes_nz_list)
 
-ACTvREM_ma <- data.frame(Gene = names(ACTvREM_fisher),
-                         Fisher_pval = unlist(ACTvREM_fisher))
-ACTvREM_ma$padj <- p.adjust(ACTvREM_ma$Fisher_pval)
-ACTvREM_ma <- ACTvREM_ma[order(ACTvREM_ma$Fisher_pval),]
-ACTvREM_ma_sig <- ACTvREM_ma[which(ACTvREM_ma$padj<0.05),]
+ACTvREM_ma <- data.frame(Gene = names(ACTvREM_fisher), do.call(rbind, ACTvREM_fisher))
+colnames(ACTvREM_ma) <- c("Gene", "Brown_pval", "Fisher_pval", "Scale_Factor_C", "DF")
+ACTvREM_ma$Brown_padj <- p.adjust(ACTvREM_ma$Brown_pval)
+ACTvREM_ma <- ACTvREM_ma[order(ACTvREM_ma$Brown_pval),]
+ACTvREM_ma_sig <- ACTvREM_ma[which(ACTvREM_ma$Brown_padj<0.05),]
 
 write.csv(ACTvREM_ma, file.path(dmgavrDir, "ACTvREM.csv"))
 ```
@@ -544,9 +515,9 @@ write.csv(ACTvREM_ma, file.path(dmgavrDir, "ACTvREM.csv"))
 ```{r plotting dmgs avr}
 ACTvREM_gr <- makeGRangesFromDataFrame(ACTvREM, keep.extra.columns = T, start.field = "pos", end.field = "pos", seqnames.field = "chr")
 
-for(i in 1:length(ACTvREM_ma_sig$Gene)){
-  Cairo(width = 1500, height = 1000, type = "pdf", file = file.path(dmgavrDir, paste0(i, "_", ACTvREM_ma_sig$Gene[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
-  print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[i], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
+for(i in 10:length(ACTvREM_ma_sig$Gene)){
+  Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgavrDir, paste0(i, "_", ACTvREM_ma_sig$Gene[i], "_ACTvREM.pdf")), bg = "white", units = "px", dpi = 120)
+  print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[i], tophits_gr = ACTvREM_gr, smooth = T, significance = F, stat = "reduce"))
   dev.off()
 }
 ```
@@ -593,21 +564,23 @@ dmr_plot(dmr_gr = dmr_ACTvREM_gr[1], meth_data = betas_avr, anno_gr = gmset_anno
 require(ggrepel)
 
 dmg_ol <- merge(CDvNon_CD_ma, ACTvREM_ma, by = "Gene")
-colnames(dmg_ol) <- c("Gene", "Fisher_pval_cvn", "padj_cvn", "Fisher_pval_avr", "padj_avr")
+colnames(dmg_ol) <- c("Gene", "Brown_pval_cvn", "Fisher_pval_cvn", "Scale_Factor_C_cvn", "DF_cvn", "Brown_padj_cvn", "Brown_pval_avr", "Fisher_pval_avr", "Scale_Factor_C_avr", "DF_avr", "Brown_padj_avr")
 
 dmg_ol$Significance <- "NS"
-dmg_ol$Significance[dmg_ol$padj_cvn <= 0.05 & dmg_ol$padj_avr <= 0.05] <- "Both"
-dmg_ol$Significance[dmg_ol$padj_cvn <= 0.05 & dmg_ol$padj_avr > 0.05] <- "CD vs non-CD"
-dmg_ol$Significance[dmg_ol$padj_cvn > 0.05 & dmg_ol$padj_avr <= 0.05] <- "CD-active vs CD-remissive"
+dmg_ol$Significance[dmg_ol$Brown_padj_cvn <= 0.05 & dmg_ol$Brown_padj_avr <= 0.05] <- "Both"
+dmg_ol$Significance[dmg_ol$Brown_padj_cvn <= 0.05 & dmg_ol$Brown_padj_avr > 0.05] <- "CD vs non-CD"
+dmg_ol$Significance[dmg_ol$Brown_padj_cvn > 0.05 & dmg_ol$Brown_padj_avr <= 0.05] <- "CD-active vs CD-remissive"
 dmg_ol$Significance <- factor(dmg_ol$Significance, levels = c("NS", "CD vs non-CD", "CD-active vs CD-remissive", "Both"))
 dmg_ol$euclidian <- sqrt((-log10(dmg_ol$Fisher_pval_cvn))^2+(-log10(dmg_ol$Fisher_pval_avr))^2)
 dmg_ol <- dmg_ol[order(dmg_ol$euclidian, decreasing = T),]
-dmg_ol$label[dmg_ol$Gene %in% c("C6orf25", "NNAT", "BLCAP", "HOXC4")] <- as.character(dmg_ol$Gene[dmg_ol$Gene %in% c("C6orf25", "NNAT", "BLCAP", "HOXC4")])
+dmg_ol$Gene <- as.character(dmg_ol$Gene)
+dmg_ol$Gene[grep("C6orf25", as.character(dmg_ol$Gene))] <- "MPIG6B"
+dmg_ol$label[dmg_ol$Gene %in% c("MPIG6B")] <- as.character(dmg_ol$Gene[dmg_ol$Gene %in% c("MPIG6B")])
 
-dmg_ol_plot <- ggplot(dmg_ol, aes(x = -log10(dmg_ol$Fisher_pval_cvn), y = -log10(dmg_ol$Fisher_pval_avr))) +
+dmg_ol_plot <- ggplot(dmg_ol, aes(x = -log10(dmg_ol$Brown_pval_cvn), y = -log10(dmg_ol$Brown_pval_avr))) +
   geom_point(aes(col = Significance)) +
   geom_text_repel(aes(label = label)) +
-  scale_color_manual(values = c(NS = "#D9D5D5", `CD vs non-CD` = "#67d0dd", `CD-active vs CD-remissive` = "#f9665e", Both = "#a885ee")) +
+  scale_color_manual(values = c(NS = "#D9D5D5", `CD vs non-CD` = "#008000", `CD-active vs CD-remissive` = "#ff00ff", Both = "#6600ff")) +
   labs(title = "Comparison CD vs non-CD with CD-active vs CD-remissive",
        subtitle = "-log10(p-value)") +
   xlab("CD vs non-CD") +
@@ -618,32 +591,6 @@ dmg_ol_plot <- ggplot(dmg_ol, aes(x = -log10(dmg_ol$Fisher_pval_cvn), y = -log10
 ```
 
 ```{r overlapping dmgs}
-#NNAT and BLCAP
-nnat_gr <- makeGRangesFromDataFrame(ACTvREM[grep("NNAT", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
-nnat_gr <- nnat_gr[start(nnat_gr) > 36148500 & start(nnat_gr) < 36150000,]
-
-nnat_plot <- dmcomp_plot(gene_of_interest = "NNAT",
-                         anno_gr = gmset_anno_gr,
-                         tophits1 = CDvNon_CD,
-                         tophits2 = ACTvREM,
-                         comparison1_name = "CD vs non-CD",
-                         comparison2_name = "CD-active vs CD-remissive",
-                         meth_data = betas_filtered,
-                         meth_groups = pdata_filtered$Severity,
-                         ylim = NULL,
-                         smooth_m = F)
-nnat_enlarged_plot <- dmr_plot(dmr_gr = nnat_gr, 
-                               meth_data = betas_filtered, 
-                               anno_gr = gmset_anno_gr, 
-                               meth_groups = pdata_filtered$Severity, 
-                               flanks = 0, 
-                               rug = F) +
-  scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
-  theme(axis.title.y = element_blank(),
-        legend.pos = "none",
-        plot.title = element_blank(),
-        plot.subtitle = element_blank())
-
 #MPIG6B (C6orf25)
 mpig6b_gr <- makeGRangesFromDataFrame(ACTvREM[grep("C6orf25", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
 mpig6b_gr <- mpig6b_gr[start(mpig6b_gr) > 31691000 & start(mpig6b_gr) < 31692000,]
@@ -664,32 +611,6 @@ mpig6b_enlarged_plot <- dmr_plot(dmr_gr = mpig6b_gr,
                                  meth_groups = pdata_filtered$Severity, 
                                  flanks = 0, 
                                  rug = F) +
-  scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
-  theme(axis.title.y = element_blank(),
-        legend.pos = "none",
-        plot.title = element_blank(),
-        plot.subtitle = element_blank())
-
-# HOXC4
-hoxc4_gr <- makeGRangesFromDataFrame(ACTvREM[grep("HOXC4", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
-hoxc4_gr <- hoxc4_gr[start(hoxc4_gr) > 54445000 & start(hoxc4_gr) < 54450000,]
-
-hoxc4_plot <- dmcomp_plot(gene_of_interest = "HOXC4",
-                          anno_gr = gmset_anno_gr,
-                          tophits1 = CDvNon_CD,
-                          tophits2 = ACTvREM,
-                          comparison1_name = "CD vs non-CD",
-                          comparison2_name = "CD-active vs CD-remissive",
-                          meth_data = betas_filtered,
-                          meth_groups = pdata_filtered$Severity,
-                          ylim = NULL,
-                          smooth_m = F)
-hoxc4_enlarged_plot <- dmr_plot(dmr_gr = hoxc4_gr, 
-                                meth_data = betas_filtered, 
-                                anno_gr = gmset_anno_gr, 
-                                meth_groups = pdata_filtered$Severity, 
-                                flanks = 0, 
-                                rug = F) +
   scale_color_manual(values=c("#00dae0", "#0000ff", "#ff0000")) +
   theme(axis.title.y = element_blank(),
         legend.pos = "none",
@@ -884,7 +805,43 @@ library(htmltidy)
 methprimer <- readHTMLTable("/home/ayliyim/archive/projects/PRJ0000002_CDMON/data/primers/methprimer_dmr.html")
 ```
 
-#Figures
+# Tables
+
+```{r sample information}
+require(dplyr)
+
+#Age
+samplesheet %>% 
+  select(Age, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(Age), stdev = sd(Age))
+
+#CRP
+samplesheet %>% 
+  select(CRP, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(CRP, na.rm = T), stdev = sd(CRP, na.rm = T))
+
+#HBI
+samplesheet %>% 
+  select(HBI, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(HBI, na.rm = T), stdev = sd(HBI, na.rm = T))
+
+#anti-TNF
+samplesheet %>% 
+  select(aTNF, Severity) %>%
+  group_by(Severity) %>%
+  summarize(n = n(), percentage = sd(aTNF, na.rm = T))
+
+#Corticosteroid
+samplesheet %>% 
+  select(Corticosteroid, Severity) %>%
+  group_by(Severity) %>%
+  summarize(n = n())
+```
+
+# Figures
 
 ```{r Figure 1}
 require(ggpubr)
@@ -899,46 +856,22 @@ pheatmap(betas_t50_cvn_dm, annotation_col = hm_anno_t50_cvn, show_colnames = F)
 dev.off()
 
 #B
-CDvNon_CD_ma_t100 <- CDvNon_CD_ma[1:100,]
-CDvNon_CD_ma_t100$Gene <- factor(CDvNon_CD_ma_t100$Gene, levels = CDvNon_CD_ma_t100$Gene)
-CDvNon_CD_ma_t100$Significance <- CDvNon_CD_ma_t100$padj<0.05
+CDvNon_CD_ma_th <- CDvNon_CD_ma[1:50,]
+CDvNon_CD_ma_th$Gene <- factor(CDvNon_CD_ma_th$Gene, levels = rev(CDvNon_CD_ma_th$Gene))
+CDvNon_CD_ma_th$Significance <- "Non-significant"
+CDvNon_CD_ma_th$Significance[CDvNon_CD_ma_th$Brown_padj<0.05] <- "Significant"
 
-Cairo(width = 3000, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1b.pdf"), bg = "white", units = "px", dpi = 120)
-ggplot(CDvNon_CD_ma_t100, aes(x = Gene, y = -log10(Fisher_pval), fill = Significance)) +
+Cairo(width = 1000, height = 1500, type = "pdf", file = file.path(fig1Dir, "fig1b.pdf"), bg = "white", units = "px", dpi = 120)
+ggplot(CDvNon_CD_ma_th, aes(x = Gene, y = -log10(Brown_pval), fill = Significance)) +
   geom_bar(stat = "identity") +
   ylab("-log10(p-value)") +
   theme_bw() +
-  theme(panel.grid.major=element_blank(),
-        panel.grid.minor=element_blank(),
-        axis.text.x = element_text(angle = 90, hjust = 1),
-        axis.title.x = element_blank())
-dev.off()
-
-#C
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c1.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[1], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
-dev.off()
-
-wdfy4 <- CDvNon_CD_gr[grep("WDFY4", CDvNon_CD_gr$UCSC_RefGene_Name),]
-wdfy4 <- wdfy4[start(wdfy4) < 49920000,]
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c2.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[2], tophits_gr = wdfy4, smooth = T, significance = F))
-dev.off()
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c3.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[3], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
-dev.off()
-
-gstt1 <- CDvNon_CD_gr[grep("GSTT1", CDvNon_CD_gr$UCSC_RefGene_Name),]
-gstt1 <- gstt1[start(gstt1) > 24382000,]
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c4.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[4], tophits_gr = gstt1, smooth = F, significance = F))
-dev.off()
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1c5.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[5], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
+  coord_flip() +
+  scale_fill_manual(values=c(Significant = "#000000", `Non-significant` = "#d3d3d3")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.y = element_text(angle = 90, hjust = 1),
+        axis.title.y = element_blank())
 dev.off()
 ```
 
@@ -952,42 +885,24 @@ pheatmap(betas_t50_avr_dm, annotation_col = hm_anno_t50_avr, show_colnames = F)
 dev.off()
 
 #B
-ACTvREM_ma_t100 <- ACTvREM_ma[1:100,]
-ACTvREM_ma_t100$Gene <- factor(ACTvREM_ma_t100$Gene, levels = ACTvREM_ma_t100$Gene)
-ACTvREM_ma_t100$Significance <- ACTvREM_ma_t100$padj<0.05
+ACTvREM_ma_th <- ACTvREM_ma[1:50,]
+ACTvREM_ma_th$Gene <- factor(ACTvREM_ma_th$Gene, levels = rev(ACTvREM_ma_th$Gene))
+ACTvREM_ma_th$Significance <- "Non-significant"
+ACTvREM_ma_th$Significance[ACTvREM_ma_th$Brown_padj<0.05] <- "Significant"
 
-Cairo(width = 3000, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2b.pdf"), bg = "white", units = "px", dpi = 120)
-ggplot(ACTvREM_ma_t100, aes(x = Gene, y = -log10(Fisher_pval), fill = Significance)) +
+Cairo(width = 1000, height = 1500, type = "pdf", file = file.path(fig2Dir, "fig2b.pdf"), bg = "white", units = "px", dpi = 120)
+ggplot(ACTvREM_ma_th, aes(x = Gene, y = -log10(Brown_pval), fill = Significance)) +
   geom_bar(stat = "identity") +
   ylab("-log10(p-value)") +
   theme_bw() +
-  theme(panel.grid.major=element_blank(),
-        panel.grid.minor=element_blank(),
-        axis.text.x = element_text(angle = 90, hjust = 1),
-        axis.title.x = element_blank())
-dev.off()
-
-#C
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c1.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[1], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
-dev.off()
-
-serpinf1 <- ACTvREM_gr[grep("SERPINF1", ACTvREM_gr$UCSC_RefGene_Name),]
-serpinf1 <- serpinf1[start(serpinf1) < 1666000 & start(serpinf1) > 1664400,]
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c2.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[3], tophits_gr = serpinf1, smooth = T, significance = F))
-dev.off()
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c3.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[4], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
-dev.off()
-
-Cairo(width = 1500, height = 750, type = "pdf", file = file.path(fig2Dir, "fig2c4.pdf"), bg = "white", units = "px", dpi = 120)
-print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[5], tophits_gr = ACTvREM_gr, smooth = T, significance = F))
+  coord_flip() +
+  scale_fill_manual(values=c(Significant = "#000000", `Non-significant` = "#d3d3d3")) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        #axis.text.y = element_text(angle = 90, hjust = 1),
+        axis.title.y = element_blank())
 dev.off()
 ```
-
 
 ```{r Figure 3}
 fig3Dir <- file.path(manuscriptDir, "fig3")
@@ -1003,37 +918,54 @@ Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3
 print(mpig6b_plot)
 dev.off()
 
-Cairo(width = 1500, height = 500, type = "pdf", file = file.path(fig3Dir, "fig3b2.pdf"), bg = "white", units = "px", dpi = 120)
+Cairo(width = 1500, height = 1000, type = "pdf", file = file.path(fig3Dir, "fig3b2.pdf"), bg = "white", units = "px", dpi = 120)
 print(mpig6b_enlarged_plot)
 dev.off()
-
-#C
-Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3c1.pdf"), bg = "white", units = "px", dpi = 120)
-print(nnat_plot)
-dev.off()
-
-Cairo(width = 1500, height = 500, type = "pdf", file = file.path(fig3Dir, "fig3c2.pdf"), bg = "white", units = "px", dpi = 120)
-print(nnat_enlarged_plot)
-dev.off()
-
-#D
-Cairo(width = 1500, height = 1500, type = "pdf", file = file.path(fig3Dir, "fig3d1.pdf"), bg = "white", units = "px", dpi = 120)
-print(hoxc4_plot)
-dev.off()
-
-Cairo(width = 1500, height = 500, type = "pdf", file = file.path(fig3Dir, "fig3d2.pdf"), bg = "white", units = "px", dpi = 120)
-print(hoxc4_enlarged_plot)
-dev.off()
-
-
 ```
 
 ```{r Figure S1}
 figS1Dir <- file.path(manuscriptDir, "figS1")
 dir.create(figS1Dir)
 
+figS1_df <- mvals_filtered_svd_df
+figS1_df$Severity <- as.character(figS1_df$Severity)
+figS1_df$Severity <- gsub("Active", "CD-active", figS1_df$Severity)
+figS1_df$Severity <- gsub("Remissive", "CD-remissive", figS1_df$Severity)
+figS1_df$Severity <- gsub("Non_CD", "non-CD", figS1_df$Severity)
+figS1_df$Severity <- factor(figS1_df$Severity, levels = c("non-CD", "CD-remissive", "CD-active"))
+
+pct_var <- mvals_filtered_svd$d/sum(mvals_filtered_svd$d)*100
+
+figS1_plot <- ggplot(figS1_df, aes(x = PC1, y = PC2, fill = Severity)) +
+  geom_point(shape = 21, size = 4) +
+  theme_bw() +
+  scale_fill_manual(values=c(`non-CD` = "#00dae0",`CD-remissive` = "#0000ff", `CD-active` = "#ff0000")) +
+  xlab(paste0("PC1 (", round(pct_var[1], 1), "%)")) +
+  ylab(paste0("PC2 (", round(pct_var[2], 1), "%)")) +
+  labs(title = "Principal component analysis") +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
+
 Cairo(width = 1000, height = 750, type = "pdf", file = file.path(figS1Dir, "figS1.pdf"), bg = "white", units = "px", dpi = 120)
-print(mvals_filtered_svd_plotobj)
+print(figS1_plot)
+dev.off()
+```
+
+```{r Figure S2}
+figS2Dir <- file.path(manuscriptDir, "figS2")
+dir.create(figS2Dir)
+
+ggplot(data.frame(CDvNon_CD), aes(x = P.Value)) +
+  geom_bar() +
+  theme_bw()
+```
+
+```{r Figure S3}
+figS3Dir <- file.path(manuscriptDir, "figS3")
+dir.create(figS3Dir)
+
+Cairo(width = 1500, height = 750, type = "pdf", file = file.path(figS3Dir, "figS3.pdf"), bg = "white", units = "px", dpi = 120)
+dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, flanks = 0)
 dev.off()
 ```
 

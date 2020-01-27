@@ -1,17 +1,20 @@
-dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2, comparison1_name, comparison2_name, meth_data, meth_groups, ylim = NULL, smooth_diff = T, smooth_m = T){
+dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2, comparison1_name, comparison2_name, meth_data, meth_groups, ylim = NULL, smooth_diff = T, smooth_m = T, stat = "reduce"){
   require(ggbio)
   require(reshape2)
-  require(Homo.sapiens)
+  require(TxDb.Hsapiens.UCSC.hg19.knownGene)
+  
+  data(genesymbol, package = "biovizBase")
   
   cpgs <- anno_gr[grep(paste0("(^|;)", as.character(gene_of_interest), "($|;)"), anno_gr$UCSC_RefGene_Name),] 
   
   #gene track
   gene_track <- ggplot() + 
-    geom_alignment(Homo.sapiens, which = range(cpgs, ignore.strand = T), columns = "GENEID") + 
+    geom_alignment(TxDb.Hsapiens.UCSC.hg19.knownGene, which = genesymbol[gene_of_interest], stat = stat) + 
     theme_bw() + 
     theme(panel.grid.major = element_blank(), 
           panel.grid.minor = element_blank(),
-          text = element_text(size = 12))
+          text = element_text(size = 12),
+          panel.border = element_blank())
   
   #methylation difference track
   tophits_merged <- rbind(data.frame(tophits1[names(cpgs), c("Beta", "P.Value", "Name")], Comparison = comparison1_name),
@@ -39,7 +42,8 @@ dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2, compariso
     mdiff_track <- mdiff_track + geom_line(alpha = 0.5, aes(col = Comparison))
   }
   
-  mdiff_track <- mdiff_track + geom_point(aes(alpha = -log10(P.Value), col = Comparison)) 
+  #mdiff_track <- mdiff_track + geom_point(aes(alpha = -log10(P.Value), col = Comparison))
+  mdiff_track <- mdiff_track + geom_point(aes(col = Comparison), alpha = 0.1) 
   
   #methylation track
   meth_df <- reshape2::melt(data.frame(Group = meth_groups, t(meth_data[names(cpgs),])), variable.name = "CpG", value.name = "Methylation")
@@ -72,5 +76,5 @@ dmcomp_plot <- function(gene_of_interest, anno_gr, tophits1, tophits2, compariso
   plotobj <- tracks("Gene" = gene_track, 
                     "% Methylation difference" = mdiff_track, 
                     "% Methylation" = m_track,
-                    heights = c(3, 5, 5))
+                    heights = c(1, 4, 4))
 }

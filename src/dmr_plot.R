@@ -1,4 +1,6 @@
 dmr_plot <- function(dmr_gr, meth_data, anno_gr, meth_groups, important_cpgs = NULL, flanks = NULL, title = NULL, legend = T, highlight = NULL, rug = T, gridlines = F){
+  require(reshape2)
+  
   if(class(dmr_gr) != "GRanges") stop("dmr_gr must be a GRanges object")
   if(is.null(flanks)) flanks <- width(dmr_gr)/2
   if(!is.null(highlight)){
