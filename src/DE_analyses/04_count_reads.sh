@@ -9,7 +9,7 @@ bamDir="$HOME/bam"
 countDir="$outputDir/counts"
 mkdir $countDir
 
-annotation="$HOME/archive/common_data/genome/homo_sapiens/ensembl_v95/Homo_sapiens.GRCh38.95.gtf"
+annotation="$HOME/archive/common_data/genome/homo_sapiens/GRCh37/gtf/Homo_sapiens.GRCh37.87.gtf"
 
 bam_files=$(ls $bamDir/*.bam) 
 

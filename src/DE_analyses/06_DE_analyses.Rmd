@@ -48,7 +48,7 @@ enshsbm <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 ens2symbol <- getBM(attributes = c("ensembl_gene_id", "entrezgene_id", "hgnc_symbol"), mart = enshsbm)
 
 #Counts
-gcounts_raw <- read.csv(file.path("output", "02_DE_analyses", "counts", "counts.txt"), sep = "\t", skip = 1)
+gcounts_raw <- read.csv(file.path("output", "02_DE_analyses", "counts", "GRCh37", "counts.txt"), sep = "\t", skip = 1)
 gcounts <- gcounts_raw[,c(7:ncol(gcounts_raw))]
 rownames(gcounts) <- gcounts_raw$Geneid
 
@@ -119,6 +119,14 @@ dev.off()
 ggplotly(pca_plotobj)
 ```
 
+```{r sex estimation}
+transcript_strip_plot(id = "ENSG00000229807", counts = rld_counts, factor_interest = colData(rld)$Source)
+
+rld_counts["ENSG00000229807",]
+```
+
+2 male and 2 female
+
 # Differential expression analyses
 
 ```{r differential analyses setup, message = F, warning = F}
@@ -157,7 +165,7 @@ print(transcript_strip_plot(id = degs_lrt[i,"ENS"],
 ```{r DMGs}
 require(ggpubr)
 
-dmgdegDir <- file.path(degDir, "dmgdeg", "200120")
+dmgdegDir <- file.path(degDir, "dmgdeg", "200203")
 dir.create(dmgdegDir)
 
 dmgdeg_cvnDir <- file.path(dmgdegDir, "cvn")
@@ -234,9 +242,8 @@ dev.off()
 
 ```
 
-
 ```{r fig4 v2}
-fig4v2Dir <- file.path("docs", "manuscript", "200122", "fig4", "v2")
+fig4v2Dir <- file.path("docs", "manuscript", "data", "200128", "fig4", "v2")
 dir.create(fig4v2Dir)
 
 fig4v2 <- ggarrange(cvn_plot_objs, avr_plot_objs, nrow = 2, ncol = 1, labels = c("a)", "b)"))

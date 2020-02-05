@@ -5,7 +5,7 @@ baseDir="$HOME/archive/projects/PRJ0000002_CDMON"
 fastqDir="$HOME/archive/raw_data/fastq/rnaseq/NCBI_GSE107019"
 outputDir="$baseDir/output"
 
-genomeDir="$HOME/ensembl_GRCh38_r95_sjdbO49"
+genomeDir="$HOME/ensembl_GRCh37_r87_sjdbO49"
 
 samDir="$HOME/sam"
 mkdir $samDir
