@@ -18,7 +18,7 @@ require(EmpiricalBrownsMethod)
 samplesDir <- file.path("data", "samples")
 commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")
 
-manuscriptDir <- file.path("docs", "manuscript", "data", "200128")
+manuscriptDir <- file.path("docs", "manuscript", "data", "200205")
 dir.create(manuscriptDir)
 proposalDir <- file.path("docs", "proposal")
 dir.create(proposalDir)
@@ -574,12 +574,49 @@ avr_dmeg_svd_plot <- ggplot(mvals_avr_dmeg_svd_df, aes(x = PC1, y = PC2, col = S
 ```
 
 ```{r classification avr}
+require(caret)
 require(glmnet)
 
 set.seed(243098)
-mvals_avr_glmnetcv <- cv.glmnet(x = t(mvals_avr_dmeg), y = as.numeric(pdata_avr$Severity), family = "binomial", type.measure = "mse", alpha = 0)
 
-predict(mvals_avr_glmnetcv, newx = t(mvals_avr_dmeg), s = "lambda.min", type = "class")
+##glmnet
+#mvals_avr_glmnetcv <- cv.glmnet(x = t(mvals_avr_dmeg), y = as.numeric(pdata_avr$Severity), family = "binomial", type.measure = "mse", alpha = 0)
+#predict(mvals_avr_glmnetcv, newx = t(mvals_avr_dmeg), s = "lambda.min", type = "class")
+
+#caret
+avr_train_df <- data.frame(Severity = pdata_avr$Severity,
+                           t(mvals_avr_dmeg))
+
+##cross-validation
+fitControl <-
+  trainControl(
+    method = "cv",
+    number = 10,
+    classProbs = T,
+    savePredictions = "all",
+    summaryFunction = twoClassSummary
+  )
+
+mvals_avr_glmnetcv_caret <- train(
+  Severity ~.,
+  data = avr_train_df,
+  method = "glmnet",
+  trControl = fitControl,
+  metric = "ROC",
+  tuneGrid = expand.grid(alpha = 0, lambda = 10^seq(-3, 3, length = 100))
+)
+
+mvals_avr_glmnetcv_split <- split(mvals_avr_glmnetcv_caret$pred, mvals_avr_glmnetcv_caret$pred$Resample)
+
+mvals_avr_performance <- do.call(rbind, lapply(names(mvals_avr_glmnetcv_split), function(fold){
+  data.frame(lift(obs ~ Active, data = mvals_avr_glmnetcv_split[[fold]], class = "Active")$data, 
+             fold = fold)
+}))
+
+ggplot(mvals_avr_performance, aes(x = 1-Sp, y = Sn, col = fold)) +
+  geom_line()
+
+
 ```
 
 
@@ -971,27 +1008,27 @@ fig1Dir <- file.path(manuscriptDir, "fig1")
 dir.create(fig1Dir)
 
 #A
-Cairo(width = 1250, height = 1500, type = "pdf", file = file.path(fig1Dir, "fig1a.pdf"), bg = "white", units = "px", dpi = 120)
-pheatmap(betas_t50_cvn_dm, annotation_col = hm_anno_t50_cvn, show_colnames = F)
+Cairo(width = 2250, height = 1000, type = "pdf", file = file.path(fig1Dir, "fig1a.pdf"), bg = "white", units = "px", dpi = 120)
+pheatmap(t(betas_t50_cvn_dm), annotation_row = hm_anno_t50_cvn, show_rownames = F)
 dev.off()
 
 #B
 CDvNon_CD_ma_th <- CDvNon_CD_ma[1:50,]
-CDvNon_CD_ma_th$Gene <- factor(CDvNon_CD_ma_th$Gene, levels = rev(CDvNon_CD_ma_th$Gene))
+CDvNon_CD_ma_th$Gene <- factor(CDvNon_CD_ma_th$Gene, levels = CDvNon_CD_ma_th$Gene)
 CDvNon_CD_ma_th$Significance <- "Non-significant"
 CDvNon_CD_ma_th$Significance[CDvNon_CD_ma_th$Brown_padj<0.05] <- "Significant"
 
-Cairo(width = 1000, height = 1500, type = "pdf", file = file.path(fig1Dir, "fig1b.pdf"), bg = "white", units = "px", dpi = 120)
+Cairo(width = 2250, height = 750, type = "pdf", file = file.path(fig1Dir, "fig1b.pdf"), bg = "white", units = "px", dpi = 120)
 ggplot(CDvNon_CD_ma_th, aes(x = Gene, y = -log10(Brown_pval), fill = Significance)) +
   geom_bar(stat = "identity") +
   ylab("-log10(p-value)") +
   theme_bw() +
-  coord_flip() +
+  #coord_flip() +
   scale_fill_manual(values=c(Significant = "#000000", `Non-significant` = "#d3d3d3")) +
   theme(panel.grid.major = element_blank(),
         panel.grid.minor = element_blank(),
-        #axis.text.y = element_text(angle = 90, hjust = 1),
-        axis.title.y = element_blank())
+        axis.text.x = element_text(angle = 90, hjust = 1),
+        axis.title.x = element_blank())
 dev.off()
 ```
 
