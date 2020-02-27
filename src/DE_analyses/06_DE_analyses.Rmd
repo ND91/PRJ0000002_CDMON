@@ -1,5 +1,5 @@
 ---
-title: "Differential expression analyses"
+title: "Differential expression analyses public data"
 author: "Andrew Y.F. Li Yim"
 date: "January 17, 2019"
 output:
@@ -9,37 +9,47 @@ editor_options:
   chunk_output_type: console
 ---
 
-```{r setup, echo = F, message = F, warning = F}
+In the previous analyses, we performed differential methylation analysis where we compared CD14+ monocytes obtained from CD with non-CD as well as with CD-active with CD-remissive where we identified differentially methylated genes (DMGs) for both comparisons. One snag we ran into was the fact that CD14+ monocytes are not a homogeneous population and in fact consist of three subpopulations, namely the classical, intermediate and non-classical. Moreover, from the literature, we know that the proportions of these monocyte populations are associated with CD and CD-activity [Koch et al. 2010](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC2909416/). In our methylation analyses we downloaded the data from [Zawada et al. 2016](https://www.ncbi.nlm.nih.gov/pubmed/27018948), but found the results to be inconclusive. To say something sensible about our DMGs, we could make an abstraction by looking at gene expression. For this to make sense, we must make the assumption that gene expression and DNA methylation are inversely correlated (while this is typically the case, this is not true for all). Luckily, such expression data on monocyte subpopulations exist with the often-used dataset by [Monaco et al. 2019](https://www.ncbi.nlm.nih.gov/pubmed/30726743) being an example thereof. I therefore downloaded the their raw RNA sequencing data from [GSE107011](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE107011) and aligned it using scripts found in the same directory. After having obtained counts, I started to do the analysis. 
+
+Essentially, we are interested in whether the DMGs are associated with changes in monocyte populations. To test whether a gene is associated with monocyte populations, we can utilize the loglikelihood ratio test, where we define the full model as `covariates + monocyte` and the reduced model as `covariates`.
+
+```{r packages}
 require(Cairo)
 require(ggplot2)
 require(plotly)
+require(ggpubr)
+require(NDlib) # Can be found on my Github
+```
 
+```{r setup}
 deaDir <- file.path("output", "02_DE_analyses")
 dir.create(deaDir)
 
 rdsDir <- file.path(deaDir, "rds")
 dir.create(rdsDir)
+```
 
+```{r colors}
+#Function sourced from https://stackoverflow.com/questions/8197559/emulate-ggplot2-default-color-palette
 gg_color_hue <- function(n) {
   hues = seq(15, 375, length = n + 1)
   hcl(h = hues, l = 65, c = 100)[1:n]
 }
+
 cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 ```
 
-#Introduction
-
-```{r groups}
+```{r samples}
 samples <- read.csv(file.path("data", "samples", "samplesheet_gse107011_PRJ0000002_CDMON_v1.csv"), stringsAsFactors = F)
 rownames(samples) <- samples$SRR
 samples$Monocytes <- factor(samples$Monocytes, levels = c("Classical", "Intermediate", "Non-classical"))
 ```
 
-#Import and preprocessing
+# Import and preprocessing
 
-We will perform all analyses using the `DESeq2` package. Previously, we performed read counting using the `featureCount` tool found in the `Subread` package. The `featureCount` tool adds some extra columns, which are not easily parsable, we will therefore ignore these columns for now and source them elsewhere at a later point in time.
+Previously, we performed read counting using the `featureCount` tool found in the `Subread` package. The `featureCount` tool adds some extra columns, which are not easily parsable, we will therefore ignore these columns.
 
-```{r count processing, message = F}
+```{r count processing}
 require(DESeq2)
 require(biomaRt)
 
@@ -57,7 +67,11 @@ gcounts <- gcounts[rowSums(gcounts) != 0,]
 
 colnames(gcounts) <- gsub("^.+\\.(SRR[0-9]+)\\.bam", "\\1", colnames(gcounts))
 gcounts <- gcounts[,rownames(samples)]
+```
 
+Having performed some basic cleaning on the data, we will prepare the DESeqDataSet for differential expression analysis.
+
+```{r prepare dds}
 #Remove genes with low read counts
 dds <- DESeqDataSetFromMatrix(countData = gcounts,
                               colData = samples,
@@ -70,9 +84,11 @@ rld <- rlog(dds)
 rld_counts <- assay(rld)
 ```
 
-#Exploratory data analyses
+# Exploratory data analyses
 
-```{r sample pairwise analysis, fig.width = 10, fig.height = 8, fig.align = "center", message = F, warning = F}
+While not necessary, we can still perform some degree of exploratory analyses to investigate general structures.
+
+```{r sample pairwise analysis}
 require(pheatmap)
 edaDir <- file.path(deaDir, "eda")
 dir.create(edaDir)
@@ -88,7 +104,7 @@ pheatmap(rld_cor, annotation_row = rld_hm_anno, annotation_col = rld_hm_anno)
 dev.off()
 ```
 
-```{r principal component analysis treatment tolerization, fig.width = 10, fig.height = 10, fig.align = "center"}
+```{r principal component analysis}
 rld_dm <- rld_counts-rowMeans(rld_counts)
 
 rld_svd <- svd(t(rld_dm))
@@ -125,22 +141,16 @@ transcript_strip_plot(id = "ENSG00000229807", counts = rld_counts, factor_intere
 rld_counts["ENSG00000229807",]
 ```
 
-2 male and 2 female
+There appear to be 2 males and 2 females.
 
 # Differential expression analyses
 
-```{r differential analyses setup, message = F, warning = F}
-require(NDlib)
-
+```{r differential analyses setup}
 degDir <- file.path(deaDir, "deg")
 dir.create(degDir)
 ```
 
-## Differential expression
-
-The goal is to identify genes that are differentially expressed in one of the conditions (classical, non-classical or intermediate monocytes). To that end, we can make use of the likelihood ratio test.
-
-```{r Stimulus vs Sham differential expression, fig.width = 10, fig.height = 6, fig.align = "center", message = F, warning = F}
+```{r subset associated genes}
 lrtDir <- file.path(degDir, "lrt")
 dir.create(lrtDir)
 
@@ -162,10 +172,10 @@ print(transcript_strip_plot(id = degs_lrt[i,"ENS"],
                             title = degs_lrt[i,"mgi_symbol"]))
 ```
 
-```{r DMGs}
-require(ggpubr)
+Next we investigated whether the expression of the DMGs are associated with monocyte subsets. 
 
-dmgdegDir <- file.path(degDir, "dmgdeg", "200203")
+```{r dmgs}
+dmgdegDir <- file.path(degDir, "dmgdeg", "200225")
 dir.create(dmgdegDir)
 
 dmgdeg_cvnDir <- file.path(dmgdegDir, "cvn")
@@ -216,6 +226,10 @@ for(i in 1:nrow(avr_degs_lrt_ol)){
 avr_plot_objs <- ggarrange(plotlist = avr_plotlist, nrow = 2, ncol = 5, align = "hv", common.legend = T, legend = "none")
 ```
 
+For multiple of the DMGs, their expression is associated with monocyte subsets. It is enticing to suggest therefore that the methylation might also be affected by differences in populations. Turning that argument around, the observed differences in methylation for the subset-associated DMGs might simply be the differences in monocyte populations. Interestingly, the non-significant DMGs, might then be unassociated with monocyte populations, which would warrant further research. Either way, substantial validation experiments would be necessary to corroborate our observations.
+
+# Figures
+
 ```{r fig4 v1}
 rld_counts_dm <- rld_counts-rowMeans(rld_counts)
 
@@ -252,4 +266,3 @@ Cairo(file = file.path(fig4v2Dir, "fig4v2.pdf"), type = "pdf", units = "px", wid
 print(fig4v2)
 dev.off()
 ```
-

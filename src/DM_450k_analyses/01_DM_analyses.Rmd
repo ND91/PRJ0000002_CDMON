@@ -1,115 +1,64 @@
 ---
-title: "DM analysis PRJ0000002_CDMON"
-author: "Andrew Li Yim"
-date: "November 4, 2015"
+title: "Differential methylation analysis"
+author: "Andrew Y.F. Li Yim"
+date: "February 25, 2020"
 output: html_document
 editor_options: 
   chunk_output_type: console
 ---
 
-In this report we will perform the differential methylation analyses on CD14+ monocytes derived from CD and non-CD patients. The CD patients can be further subdivided into active and remissive CD.
+# Introduction
 
-```{r setup, echo = F}
+In this report I will perform differential methylation analyses on DNA methylation data (Illumina HumanMethylation 450k BeadChip array) obtained from CD14+ monocytes, which were isolated from CD patients (N = 16) and non-CD volunteers (N = 8). The CD patients were further subdivided into CD-active (N = 8) and remissive CD (N = 8), where activity was defined based on global patient assessment.
+
+In preparation of the actual analysis, I will need to prepare the necessary objects. First, the necessary packages need to be imported.
+
+```{r packages}
+require(Biobase)
+require(org.Hs.eg.db)
 require(pheatmap)
 require(minfi)
-require(aggregation)
-require(EmpiricalBrownsMethod)
+require(Cairo)
+require(ggplot2)
+require(ggrepel)
+require(dplyr)
+require(plotly)
+require(NDlib) # Can be found on my Github
+```
 
+```{r setup}
 samplesDir <- file.path("data", "samples")
 commondataDir <- file.path("/home", "ayliyim", "archive", "common_data")
 
-manuscriptDir <- file.path("docs", "manuscript", "data", "200205")
-dir.create(manuscriptDir)
-proposalDir <- file.path("docs", "proposal")
-dir.create(proposalDir)
+isodate <- "200225"
+#isodate <- strftime(Sys.time(), "%y%m%d")
 
+outputDir <- file.path("output", "01_DM_450k_analyses", isodate)
+dir.create(outputDir)
+manuscriptDir <- file.path("docs", "manuscript", "data", isodate)
+dir.create(manuscriptDir)
+```
+
+## Samples
+
+Samples will be imported using [`minfi`](https://bioconductor.org/packages/release/bioc/html/minfi.html).
+
+```{r samples import}
 samplesheet <- read.metharray.sheet(base = samplesDir, pattern = "samplesheet_450k_PRJ0000002_CDMON_V6")
 samplesheet$Basename <- samplesheet$Path
 samplesheet$Sex <- "F"
+```
 
+```{r samples per donor}
+table(samplesheet$Donor_ID)
+```
+
+There are two samples from donor `CDACT-1`. From the information provided by my colleagues, it appeared that they *might* have messed up one sample, but it was not entirely sure what had occurred. So both samples were run from the same individual on the methylation array. 
+
+I first import the data and preprocess it using the `preprocessFunnorm` normalization method, which performs background correction and quantile normalization. An unfortunate side-effect of `preprocessFunnorm` is that the resulting M-values have `-Inf` values, which will need to be removed. I also perform some initial filtering of the data by removing probes annotated with known genetic variants and heterogeneous probes.
+
+```{r data import and preprocessing}
 rgset <- read.metharray.exp(targets = samplesheet)
-```
-
-```{r promoter capture Hi-C}
-pchic <- read.csv("~/archive/common_data/enhancers/javierre2016/ActivePromoterEnhancerLinks_hg19.tsv", sep = "\t")
-pchic_gr <- makeGRangesFromDataFrame(pchic, keep.extra.columns = T, seqnames.field = "oeChr", start.field = "oeSt", end.field = "oeEnd")
-```
-
-```{r bespoke functions}
-source(file.path("src", "dmr_plot.R"))
-source(file.path("src", "dmg_plot.R"))
-source(file.path("src", "dmcomp_plot.R"))
-```
-
-Date the output directory.
-
-```{r output directory}
-outputDir <- file.path("output", "01_DM_450k_analyses", "200120")
-dir.create(outputDir)
-```
-
-```{r Quality control, echo = FALSE}
-edaDir <- file.path(outputDir, "eda")
-dir.create(edaDir)
-
-# require(MethylAid)
-# methylaid_summarized <- summarize(samplesheet)
-# visualize(methylaid_summarized)
-# 
-# require(shinyMethyl)
-# shinymethyl_summarized <- shinySummarize(rgset)
-# runShinyMethyl(shinymethyl_summarized)
-# 
-# require(ewastools)
-# ewastools_samples <- read_idats(samplesheet$Basename)
-# ewastools_betas <- dont_normalize(ewastools_samples)
-# ewastools_snps <- call_genotypes(ewastools_betas[ewastools_samples$manifest[probe_type == 'rs', index], ], learn = F)
-# check_snp_agreement(genotypes = ewastools_snps$gamma, weights = 1 - ewastools_snps$outliers, donor_ids = samplesheet$Donor_ID, sample_ids = samplesheet$Sample_ID)
-```
-
-According to MethylAid, all samples pass the quality control. Additionally, the ewastools package was used to confirm that the samples were obtained from the same origin.
-As the sample pertains peripheral blood, we can utilize the estimateCellCounts function from minfi to see whether we observe any differences in estimated cell populations between the various groups.
-
-```{r Blood cell distribution}
-require(FlowSorted.Blood.450k)
-require(ggplot2)
-require(Cairo)
-
-cellCounts <- estimateCellCounts(rgSet = rgset, 
-                                 compositeCellType = "Blood",
-                                 processMethod = "auto", 
-                                 probeSelect = "auto")
-cellCounts <- data.frame(cellCounts, severity = pData(rgset)$Severity, array = rownames(cellCounts))
-
-cellCounts_melt <- reshape2::melt(cellCounts, id.vars = c("severity", "array"), id.vals = c("Response"))
-
-cellCounts_plot <- ggplot(cellCounts_melt, aes(x = severity, y = value)) +
-  geom_boxplot(outlier.shape = NA) +
-  geom_jitter() +
-  facet_wrap(~variable) +
-  theme_bw() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-Cairo(width = 1000, height = 1000, type = "png", file = file.path(edaDir, "estimatedCellCounts.png"), bg = "white", units = "px", dpi = 120)
-print(cellCounts_plot)
-dev.off()
-```
-
-The cell distribution accurately guesses that the samples pertain monocytes. There appears to be one sample however that appears more CD4T-like.
-
-```{r CD4T samples}
-require(dplyr)
-
-CD4T_array_ID <- cellCounts_melt %>% 
-  filter(variable == "Mono" & value < 0.25) %>% 
-  select(array)
-
-pData(rgset)[CD4T_array_ID$array, "Sample_ID"]
-```
-
-We will next investigate whether this particular sample is an outlier in the PCA as well. Before that, we will remove the regular outliers.
-
-```{r Preprocessing}
 gmset <- preprocessFunnorm(rgSet = rgset)
 gmset_nosnpcpg <- gmset[with(getSnpInfo(gmset), which(CpG_maf < 0.01 | is.na(CpG_maf))),]
 gmset_nosnpsbe <- gmset_nosnpcpg[with(getSnpInfo(gmset_nosnpcpg), which(SBE_maf < 0.01 | is.na(SBE_maf))),]
@@ -121,12 +70,69 @@ gmset_filtered <- gmset_nosex[!names(gmset_nosex) %in% pmprobes,]
 mvals <- getM(gmset_filtered)
 
 gmset_filtered <- gmset_filtered[-which(abs(mvals) == Inf, arr.ind = T)[,1],]
+pData(gmset_filtered)$Severity <- factor(pData(gmset_filtered)$Severity, levels = c("Non_CD", "Remissive", "Active"))
 
 betas <- getBeta(gmset_filtered)
 mvals <- getM(gmset_filtered)
 ```
 
-Are there any sex discrepancies?
+## Annotations
+
+To annotate the observed CpGs, I use a variety of sources, one of which is the promoter capture Hi-C data obtained from [Javierre et al. 2016](https://www.ncbi.nlm.nih.gov/pubmed/27863249). Using this data, I can investigate whether differentially methylated loci occur in enhancer regions and perhaps more importantly, which gene it might enhance. 
+
+```{r promoter capture hic}
+pchic <- read.csv(file.path(commondataDir, "enhancers/javierre2016/ActivePromoterEnhancerLinks_hg19.tsv"), sep = "\t")
+pchic_gr <- makeGRangesFromDataFrame(pchic, keep.extra.columns = T, seqnames.field = "oeChr", start.field = "oeSt", end.field = "oeEnd")
+```
+
+## Visualization
+
+The following functions are mostly used for visualization purposes only.
+
+```{r bespoke functions}
+source(file.path("src", "dmr_plot.R"))
+source(file.path("src", "dmg_plot.R"))
+source(file.path("src", "dmcomp_plot.R"))
+```
+
+# Quality control and exploratory data
+
+The first step in the analysis represents a sanity check of the data. Based on the given metadata I should see the following:
+
+* There are two samples from donor `CDACT1`.
+* All samples were derived from female donors.
+* Samples pertain monocytes.
+
+For quality control, I utilized [`MethylAid`](https://bioconductor.org/packages/release/bioc/html/MethylAid.html), [`shinyMethyl`](https://bioconductor.org/packages/release/bioc/html/shinyMethyl.html), [`ewastools`](https://github.com/hhhh5/ewastools) and `FlowSorted.Blood.450k` in combination with some built-in functions in `minfi`. Both `MethylAid` and `shinyMethyl` provide similar functionality, but certain aspects work better in one or the other. For example, I like the thresholds provided from `MethylAid` and the more up-to-date feel it provides with newer EPIC arrays, but I like the interface of `shinyMethyl` more as well as its more expanded functionality. In addition, I use `ewastools` to identify whether the samples from the same donor (`CDACT-1`) are actually derived from the same donor. In short, `ewastools` uses probes that bind known genetic variants to build a profile per patient. Conversely, I can also confirm that samples derived from different samples were indeed not derived (or mixed). Finally, `FlowSorted.Blood.450k` are basically 450k arrays run on flow sorted blood cells to investigate the blood cell distribution.
+
+Note that the next section is currently commented out simply because running it accidentally takes a lot of time and memory.
+
+```{r eda qc setup}
+edaDir <- file.path(outputDir, "eda")
+dir.create(edaDir)
+```
+
+```{r qc packages}
+require(MethylAid)
+require(shinyMethyl)
+require(ewastools)
+require(FlowSorted.Blood.450k)
+```
+
+```{r methylaid}
+# methylaid_summarized <- summarize(samplesheet)
+# visualize(methylaid_summarized)
+```
+
+According to `MethylAid`, all samples pass the pre-imposed quality control thresholds, which is reassuring. 
+
+```{r shinymethyl}
+# require(shinyMethyl)
+# shinymethyl_summarized <- shinySummarize(rgset)
+# runShinyMethyl(shinymethyl_summarized)
+```
+
+We find from `shinyMethyl` that all samples are female, which is in accordance with the provided information. We can better visualize this as following:
 
 ```{r Annotated and predicted sex}
 require(ggplot2)
@@ -148,9 +154,65 @@ pData(gmset_filtered) %>%
   theme(text = element_text(size=20))
 ```
 
-```{r PCA}
-require(plotly)
+```{r ewastools}
+# ewastools_samples <- read_idats(samplesheet$Basename)
+# ewastools_betas <- dont_normalize(ewastools_samples)
+# ewastools_snps <- call_genotypes(ewastools_betas[ewastools_samples$manifest[probe_type == 'rs', index], ], learn = F)
+# check_snp_agreement(genotypes = ewastools_snps$gamma, weights = 1 - ewastools_snps$outliers, donor_ids = samplesheet$Donor_ID, sample_ids = samplesheet$Sample_ID)
+```
 
+According to `ewastools`, we observe that the samples belonging to `CDACT-1` were indeed obtained from the same donor, confirming the information from my colleague.
+
+```{r bloodcell distribution estimation}
+cellCounts <- estimateCellCounts(rgSet = rgset, 
+                                 compositeCellType = "Blood",
+                                 processMethod = "auto", 
+                                 probeSelect = "auto")
+cellCounts <- data.frame(cellCounts, 
+                         severity = pData(rgset)$Severity, 
+                         array = rownames(cellCounts))
+
+cellCounts_melt <- reshape2::melt(cellCounts, id.vars = c("severity", "array"), id.vals = c("Response"))
+
+cellCounts_plot <- ggplot(cellCounts_melt, aes(x = severity, y = value)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter() +
+  facet_wrap(~variable) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+Cairo(width = 2000, height = 2000, type = "pdf", file = file.path(edaDir, "estimatedCellCounts.pdf"), bg = "white", units = "px", dpi = 120)
+print(cellCounts_plot)
+dev.off()
+```
+
+In general, the cell distribution estimation tool accurately guesses that the samples consist of monocytes. While there appears to be some variation, there does not appear to be a strong association with phenotype except for the granulocytes, where the CD patients appear to display an increased presence. In the CD8T, CD4T and monocytes, there appears to be a sample however that appears different. Naturally, the question is whether that sample is the same for all.
+
+```{r outlier sample}
+CD4T_unique_sxs_ID <- cellCounts_melt %>% 
+  filter(variable == "CD4T" & value > 0.25) %>% 
+  select(array)
+
+CD8T_unique_sxs_ID <- cellCounts_melt %>% 
+  filter(variable == "CD8T" & value > 0.125) %>% 
+  select(array)
+
+Mono_unique_sxs_ID <- cellCounts_melt %>% 
+  filter(variable == "Mono" & value < 0.25) %>% 
+  select(array)
+
+unique(CD4T_unique_sxs_ID$array, CD8T_unique_sxs_ID$array, Mono_unique_sxs_ID$array)
+```
+
+We indeed observe that it is the same sample, namely `3998609037_R01C01`. Note that we could infer that the outlier sample in every cell type should have been the same based on the fact that the prediction responses together approximately add up to 1.
+
+```{r sample ID}
+pData(rgset)[CD4T_array_ID$array, "Sample_ID"]
+```
+
+We have established that sample `HC1` behaves distinct from the rest **based on the estimated cell distribution**. The next  question is therefore whether this is only for the bloodcell-associated CpGs, or whether this is something genome-wide. To this end, we can perform principal component analysis (PCA).
+
+```{r pca}
 mvals_dm <- mvals - rowMeans(mvals)
 mvals_svd <- svd(t(mvals_dm))
 
@@ -158,48 +220,39 @@ mvals_svd_df <- data.frame(Sample_ID = pData(gmset_filtered)$Sample_ID,
                            Origin = pData(gmset_filtered)$Donor_ID,
                            Age = pData(gmset_filtered)$Age,
                            Severity = pData(gmset_filtered)$Severity,
-                           Sex = pData(gmset_filtered)$predictedSex,
                            PC1 = mvals_svd$u[,1],
                            PC2 = mvals_svd$u[,2])
 
-mvals_svd_ggplotly <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age, Sex = Sex)) +
-  geom_point(aes(col = Origin)) +
+mvals_svd_plotobj <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age)) +
+  geom_point(shape = 21, size = 4, aes(fill = Severity)) +
   theme_bw() +
-  theme(text = element_text(size=20))
+  labs(title = "Principal component analysis") +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank())
 
-ggplotly(mvals_svd_ggplotly)
-
-mvals_svd_plotobj <- ggplot(mvals_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age, Sex = Sex)) +
-  geom_point(aes(col = Origin)) +
-  theme_bw() +
-  theme(text = element_text(size=20))
+ggplotly(mvals_svd_plotobj)
 ```
 
-We again observe an outlier on PC1.
+We indeed see that sample `HC1` behaves distinct from the rest. Note that `HC6` also displays some degree of "uniqueness". I will keep `HC6` in for now, but remove `HC1`.
 
-```{r PCA outlier}
-mvals_svd_df[which.max(mvals_svd_df$PC1),]
-```
-
-This outlier appears to be HC1 again. Due to its outlier status, we will therefore remove HC1 from further analyses.
-
-```{r HC1 removal}
+```{r removal HC1}
 gmset_filtered <- gmset_filtered[, pData(gmset_filtered)$Sample_ID != "HC1"]
-pData(gmset_filtered)$Severity <- factor(pData(gmset_filtered)$Severity, levels = c("Non_CD", "Remissive", "Active"))
 
 betas <- getBeta(gmset_filtered)
 mvals <- getM(gmset_filtered)
 ```
 
-There are two samples derived from the same donor: CDACT-1a and CDACT-1b. As there is no clear way of choosing one over the other, we will take the mean.
+In addition, we will aggregate the data obtained from the two `CDACT1` samples.
 
-```{r CDACT1 aggregation}
+```{r aggregation CDACT1}
 mvals_filtered <- data.frame(CDACT1 = rowMeans(mvals[, which(pData(gmset_filtered)$Donor_ID %in% "CDACT-1", arr.ind = T)]), mvals[, 3:ncol(mvals)])
 betas_filtered <- data.frame(CDACT1 = rowMeans(betas[, which(pData(gmset_filtered)$Donor_ID %in% "CDACT-1", arr.ind = T)]), betas[, 3:ncol(betas)])
 
 pdata_filtered <- pData(gmset_filtered)[-1,]
 colnames(mvals_filtered) <- colnames(betas_filtered) <- rownames(pdata_filtered)
 ```
+
+If we generate a new PCA, we should not be able to see any (severe) outlier.
 
 ```{r pca filtered}
 mvals_filtered_dm <- mvals_filtered - rowMeans(mvals_filtered)
@@ -212,22 +265,28 @@ mvals_filtered_svd_df <- data.frame(Sample_ID = pdata_filtered$Sample_ID,
                                     PC1 = mvals_filtered_svd$u[,1],
                                     PC2 = mvals_filtered_svd$u[,2])
 
-mvals_filtered_svd_plotobj <- ggplot(mvals_filtered_svd_df, aes(x = PC1, y = PC2, fill = Severity)) +
-  geom_point(shape = 21, size = 4) +
+mvals_filtered_svd_plotobj <- ggplot(mvals_filtered_svd_df, aes(x = PC1, y = PC2, Label = Sample_ID, Origin = Origin, Severity = Severity, Age = Age)) +
+  geom_point(shape = 21, size = 4, aes(fill = Severity)) +
   theme_bw() +
   labs(title = "Principal component analysis") +
   theme(panel.grid.major = element_blank(), 
         panel.grid.minor = element_blank())
+
+ggplotly(mvals_filtered_svd_plotobj)
 ```
 
-Prepare annotation for the eventual interpretation
+# Differential methylation
 
-```{r Annotation preparation}
+Prepare annotation for the eventual interpretation.
+
+```{r annotation preparation}
 gmset_anno <- getAnnotation(gmset_filtered)
 gmset_anno_gr <- makeGRangesFromDataFrame(gmset_anno, keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
 ```
 
-```{r Output directories}
+We store the DMPs, DMRs and DMGs in separate directories.
+
+```{r dm output directories}
 dmpDir <- file.path(outputDir, "dmps")
 dir.create(dmpDir)
 dmrDir <- file.path(outputDir, "dmrs")
@@ -236,13 +295,15 @@ dmgDir <- file.path(outputDir, "dmgs")
 dir.create(dmgDir)
 ```
 
-#CD vs non-CD
-
-First we compare CD with non-CD.
-
-```{r DM analyses preparation cvn}
+```{r setup differential analyses}
 require(limma)
+```
 
+## CD vs non-CD
+
+First we compare CD with non-CD.First we compare the global differences between CD and non-CD where we correct for age. We do not need to correct for sex as the samples were obtained from an all-female cohort.
+
+```{r dm analysis preparation cvn}
 pdata_filtered$Status1 <- factor(pdata_filtered$Status1, levels = c("Non_CD", "CD"))
 
 design_cvn <- model.matrix(~Status1 + Age, data = pdata_filtered)
@@ -254,9 +315,11 @@ mvals_ebayes <- eBayes(mvals_lmfit_cvn)
 betas_ebayes <- eBayes(betas_lmfit_cvn)
 ```
 
-```{r DMP analysis}
-require(NDlib)
+### DMPs
 
+We first investigate whether we can identify particular probes that bind CpG loci that are differentially methylated, which we call differentially methylated probes (DMPs). 
+
+```{r dm analysis cvn}
 CDvNon_CD <- topTable(mvals_ebayes, coef = "Status1CD", number = "Inf", adjust.method = "BH")
 CDvNon_CD <- cbind(CDvNon_CD, Beta = coefficients(betas_ebayes)[rownames(CDvNon_CD), "Status1CD"], gmset_anno[rownames(CDvNon_CD), ])
 
@@ -271,7 +334,9 @@ for(i in 1:10){
 }
 ```
 
-```{r Heatmap cvn}
+Note that we find no statistically significant differences between CD and non-CD individuals. However, when we visualize the difference between the CD and non-CD individuals, there appear to be observable differences with a clear mean difference. 
+
+```{r heatmap cvn}
 hm_anno_t50_cvn <- data.frame(Status = pdata_filtered$Status1, row.names = rownames(pdata_filtered))
 
 betas_t50_cvn <- betas_filtered[rownames(CDvNon_CD[1:50,]),]
@@ -280,21 +345,33 @@ betas_t50_cvn_dm <- betas_t50_cvn-rowMeans(betas_t50_cvn)
 pheatmap(betas_t50_cvn_dm, annotation_col = hm_anno_t50_cvn)
 ```
 
-```{r Surrounding CpGs cvn}
+From the heatmap, it is clear that among the top 50 DMPs there are noticable differences. The lack of statistical significance does not necessarily make it biologically insignificant. 
+
+We know that the DNA methylation status of neighboring CpGs are typically correlated, we would therefore want to know whether the most significant DMP is correlated. 
+
+```{r methylation surrounding most dmps cvn}
 #cg17206772
 cg17206772_area <- which(rownames(gmset_anno) == rownames(CDvNon_CD)[1])
 cg17206772_area_gr <- gmset_anno_gr[(cg17206772_area-5):(cg17206772_area+5),]
+CDvNon_CD[names(cg17206772_area_gr),]
 
 dmr_plot(dmr_gr = range(cg17206772_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
 
 #cg16921727
 cg16921727_area <- which(rownames(gmset_anno) == rownames(CDvNon_CD)[2])
 cg16921727_area_gr <- gmset_anno_gr[(cg16921727_area-5):(cg16921727_area+5),]
+CDvNon_CD[names(cg16921727_area_gr),]
 
 dmr_plot(dmr_gr = range(cg16921727_area_gr, ignore.strand = T), meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity)
 ```
 
-```{r Differentially methylated genes cvn}
+For `cg17206772` we observe differential methylation but do not observe such differences among its neighboring CpGs, whose nearest neighbors are approximately 1000 up and downstream. Similarly, for `cg16921727` we observe no visible differential methylation among its neighbors. 
+
+### DMGs
+
+While it is clear that there is no statistically significant effect given the sample size at hand, we do observe some visible differences in methylation. However, individual probes by themselves are often not very informative. It might be more useful to identify entities that are differentially methylated. To this end, I sought to identify genes that are enriched for differential methylation. Harnessing the annotation from Illumina, we can perform some meta-analytical approach to identify genes with multiple probes whose nominal p-values are low. A similar approach was recently described for finding genes of differential expression by [Yi et al. 2018](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-018-1419-z). We have to implement some modifications however, the Fisher or Lancaster method assumes independence between the elements of an entity. While such a case can somewhat be made for individual transcripts, we cannot make the same assumption for DNA methylation as mentioned before. To that end, we utilize Brown's function instead as implemented in [`EmpiricalBrownsMethod`](https://bioconductor.org/packages/release/bioc/html/EmpiricalBrownsMethod.html), which accommodates for the correlation structure. Note that the implemented tool simply looks for genes enriched for CpGs with low p-values and does not necessarily find consecutive CpGs with low p-values, that is something we will explore next.
+
+```{r differentially methylated genes cvn}
 CDvNon_CD_genes <- lapply(strsplit(CDvNon_CD$UCSC_RefGene_Name, ";"), unique)
 names(CDvNon_CD_genes) <- rownames(CDvNon_CD)
 CDvNon_CD_genes_nz <- CDvNon_CD_genes[which(lapply(CDvNon_CD_genes, length) != 0)]
@@ -323,54 +400,63 @@ CDvNon_CD_ma_sig <- CDvNon_CD_ma[which(CDvNon_CD_ma$Brown_padj<0.05),]
 write.csv(CDvNon_CD_ma, file.path(dmgDir, "CDvNon_CD.csv"))
 ```
 
-We liftover the coordinates to GRCh38 to update it.
-
-```{r Promoters Ensembl Regulatory}
-require(rtracklayer)
-hg19togrch38 <- import.chain("~/archive/common_data/liftover_chains/hg19ToHg38.over.chain")
-dmr_CDvNon_CD_gr_grch38 <- liftOver(dmr_CDvNon_CD_gr[1], hg19togrch38)
-```
+Naturally, the DMGs might make more sense if they are visualized.
 
 ```{r plotting dmgs cvn}
 CDvNon_CD_gr <- makeGRangesFromDataFrame(CDvNon_CD, keep.extra.columns = T, start.field = "pos", end.field = "pos", seqnames.field = "chr")
 
-for(i in 10:length(CDvNon_CD_ma_sig$Gene)){
-  Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(i, "_", CDvNon_CD_ma_sig$Gene[i], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
-  print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[i], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
-  dev.off()
-}
+# for(i in 10:length(CDvNon_CD_ma_sig$Gene)){
+#   Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(i, "_", CDvNon_CD_ma_sig$Gene[i], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
+#   print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[i], tophits_gr = CDvNon_CD_gr, smooth = T, significance = F))
+#   dev.off()
+# }
 
-Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(3, "_", CDvNon_CD_ma_sig$Gene[3], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
+# Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(3, "_", CDvNon_CD_ma_sig$Gene[3], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
 print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[3], tophits_gr = CDvNon_CD_gr[start(CDvNon_CD_gr) > 24383000], smooth = T, significance = F))
-dev.off()
+# dev.off()
 
-Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(10, "_", CDvNon_CD_ma_sig$Gene[10], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
+# Cairo(width = 1500, height = 500, type = "pdf", file = file.path(dmgDir, paste0(10, "_", CDvNon_CD_ma_sig$Gene[10], "_CDvnonCD.pdf")), bg = "white", units = "px", dpi = 120)
 print(dmg_plot(gene_of_interest = CDvNon_CD_ma_sig$Gene[10], tophits_gr = CDvNon_CD_gr[start(CDvNon_CD_gr) < 107310000], smooth = T, significance = F))
-dev.off()
+# dev.off()
 ```
 
-Do the regions of differential methylation occur in any enhancers of particular genes?
+Note that for some of the DMGs we notice the grey area (standard error) to exceed the possible range [-1,1]. This is something I have not found a proper solution for.
 
-```{r dmg enhancers}
+For most of the genes, we find that the difference in methylation occurs consecutively, with many of the consecutive regions occurring within the vicinity of the transcription start site (TSS). Under the observation that DNA methylation is frequently inversely correlated with gene expression, that could suggest differential expression. However, different types of experiments are necessary for this. 
+
+#### Further annotations
+
+We next investigated whether the difference in methylation occurred in any of the enhancers regions annotated by Javierre et al.
+
+```{r dmg cvn enhancers}
 dmg_CDvNon_CD_enhancers <-lapply(CDvNon_CD_ma_sig$Gene, function(dmg){
   gene_gr <- CDvNon_CD_gr[grep(dmg, CDvNon_CD_gr$UCSC_RefGene_Name),]
   findOverlaps(pchic_gr, gene_gr)
 })
 
 CDvNon_CD_ma_sig[11,]
+```
+
+We find only that one DMG to overlap an enhancer region, namely SPI1. Naturally, we would want to know in which cell types this enhancer is active.
+
+```{r spi1 enhancer gene}
 pchic_gr[unique(queryHits(dmg_CDvNon_CD_enhancers[[11]]))]
 ```
 
-Only SPI1 appears to display enhancer functions, but according to Ensembl Regulatory in Erythroblasts, Neutrophils and type I and II macrophages only.
+SPI1 appears to display enhancer functions, but according to Ensembl Regulatory in erythroblasts, neutrophils and M0 and M1 macrophages only.
 
-No overlaps were found, but Javierre et al. might not be the only source to look at. We will next Try Ensembl Regulatory. 
+#### Gene set analyses
 
-```{r gene set analyses cvn}
+We can further identify the biological implications of the differences in methylation by performing overrepresentation analyses. For this, we use [`DOSE`](https://bioconductor.org/packages/release/bioc/html/DOSE.html) and [`clusterProfiler`](https://bioconductor.org/packages/release/bioc/html/clusterProfiler.html), where we wil perform gene set overrepresentation against the KEGG database.
+
+```{r gene set analyses setup}
 require(DOSE)
-require(Biobase)
-require(org.Hs.eg.db)
 require(clusterProfiler)
+```
 
+While we can annotate most genes automatically, some of the gene symbols cannot easily be annotated and must hence be done manually.
+
+```{r gene set dmgs cvn}
 CDvNon_CD_ma_sig$Entrez <- mapIds(Homo.sapiens, 
                                   keys = as.character(CDvNon_CD_ma_sig$Gene),
                                   column = "ENTREZID",
@@ -385,11 +471,20 @@ CDvNon_CD_ma_sig_kegg <- enrichKEGG(gene = CDvNon_CD_ma_sig$Entrez,
                                     organism = 'hsa')
 ```
 
-```{r DMR analysis cvn}
+We unfortunately do not find any significantly enriched gene set. Idea for another time: we might be losing much of the signal simply by looking at statistically significant genes only. It might make more sense to take the mean the methylation per promoter and use that as effect size in gene set enrichment analyses to see whether particular gene sets are hyper or hypomethylated.
+
+### DMRs
+
+As alluded to previously, our DMG analysis did not necessarily yield consecutive regions of differential methylation. To do so, I would use [`DMRcate`](https://bioconductor.org/packages/release/bioc/html/DMRcate.html). The nice thing about `DMRcate` is that I can essentially feed it the same model matrix (and contrasts) as used in the DMP analysis.
+
+```{r dmr analysis setup}
 dmrcvnDir <- file.path(dmrDir, "cvn")
 dir.create(dmrcvnDir)
 
 require(DMRcate)
+```
+
+```{r dmr analysis cvn}
 dmr_anno_CDvNon_CD <- cpg.annotate(object = as.matrix(mvals_filtered),
                                    datatype = "array",
                                    arraytype = "450K",
@@ -401,69 +496,25 @@ dmr_CDvNon_CD <- dmrcate(dmr_anno_CDvNon_CD, lambda = 1000, C = 2, min.cpgs = 3,
 dmr_CDvNon_CD_gr <- extractRanges(dmr_CDvNon_CD, genome = "hg19")
 
 write.csv(as.data.frame(dmr_CDvNon_CD_gr), file.path(dmrDir, "dmrs_CDvNon_CD.csv"))
-
-dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], meth_data = betas_filtered, anno_gr = gmset_anno_gr, meth_groups = pdata_filtered$Severity, flanks = 0)
-
-dmr_cpgs <- names(subsetByOverlaps(gmset_anno_gr, dmr_CDvNon_CD_gr[1]))
-CDvNon_CD[dmr_cpgs,]
-dmr_betas <- melt(cbind(betas_filtered[dmr_cpgs,], dmr_cpgs))
-dmr_betas$Status <- pdata_filtered[dmr_betas$variable, "Status1"]
-colnames(dmr_betas) <- c("CpG", "ID", "Beta", "Status")
 ```
 
-```{r Power calculation}
-powerDir <- file.path(outputDir, "power_analysis")
-dir.create(powerDir)
+Once again, no statistically significant DMR was observed. However, we would still want to visualize the most significant DMR to see whether it was nonetheless observable. 
 
-library(pwr)
-
-cohend <- function(m1, m2, s1, s2){
-  (m1 - m2)/sqrt(((s1^2) + (s2^2))/2) 
-} 
-
-dmr_summarized <- dmr_betas %>% 
-  group_by(Status, CpG) %>%
-  summarise(
-    mu = mean(Beta),
-    sdev = sd(Beta)
-  ) %>% 
-  arrange(CpG)
-  #summarise_all(funs(trimws(paste(., collapse = ''))))
-
-dmr_summarized <- split(dmr_summarized, dmr_summarized$Status)
-dmr_summarized <- merge(dmr_summarized$CD, dmr_summarized$Non_CD, by = "CpG")
-rownames(dmr_summarized) <- dmr_summarized$CpG
-
-dmr_summarized$N <- do.call(c, lapply(rownames(dmr_summarized), function(cpg){
-  cohd <- cohend(m1 = dmr_summarized[cpg, "mu.x"], m2 = dmr_summarized[cpg, "mu.y"], s1 = dmr_summarized[cpg, "sdev.x"], s2 = dmr_summarized[cpg, "sdev.y"])
-  pwr.t.test(
-    n = NULL,                  # Observations in _each_ group
-    d = cohd,           
-    sig.level = 0.001,          # Type I probability
-    power = 0.80,              # 1 minus Type II probability
-    type = "two.sample",       # Change for one- or two-sample
-    alternative = "two.sided"
-  )$n
-}))
-
-pwr.t.test(
-  n = NULL,                  # Observations in _each_ group
-  d = 2.456725,           
-  sig.level = 0.001,          # Type I probability
-  power = 0.80,              # 1 minus Type II probability
-  type = "two.sample",       # Change for one- or two-sample
-  alternative = "two.sided"
-)
-
-dmr_summarized <- dmr_summarized[dmr_cpgs,]
-write.csv(dmr_summarized, file.path(powerDir, "power_dmr_cpgs.csv"))
+```{r dmr cvn visualization}
+dmr_plot(dmr_gr = dmr_CDvNon_CD_gr[1], 
+         meth_data = betas_filtered, 
+         anno_gr = gmset_anno_gr, 
+         meth_groups = pdata_filtered$Status1, 
+         flanks = 0)
 ```
+
+Visualization does appear to suggest that the CD group is different from the non-CD group. It might be worthwhile to investigate this in future confirmatory studies. 
 
 ## ACT vs REM
 
-### No correction for medication
+Within the CD patients, we would want to compare the samples from CD-active with CD-remissive. 
 
-```{r DM analyses setup avr}
+```{r dm analysis preparation avr}
 dmpavrDir <- file.path(dmpDir, "avr")
 dir.create(dmpavrDir)
 
@@ -471,7 +522,19 @@ pdata_avr <- pdata_filtered[pdata_filtered$Status1 == "CD", ]
 pdata_avr$Severity <- factor(pdata_avr$Severity, c("Remissive", "Active"))
 mvals_avr <- mvals_filtered[,rownames(pdata_avr)]
 betas_avr <- betas_filtered[,rownames(pdata_avr)]
+```
 
+Medication is naturally a very important aspect of CD and is likely a very strong reason underlying activity. It would therefore be prudent to investigate how medication might relate to the observations made. First question is, can we control for it in our model? 
+
+```{r avr medication}
+table(pdata_avr[,c("Severity", "Medication")])
+```
+
+Notably, most patients are on some kind of medication. However, 2 of the CD-active patients are not on medication. This is rather unfortunate as adding it to the model would require an additional covariate thereby decreasing the degrees of freedom. Instead of controlling for it, I will check post-hoc whether the CD-active patients on no medication behave distinct.
+
+### DMPs
+
+```{r dm analysis avr}
 design_avr <- model.matrix(~Severity + Age, data = pdata_avr)
 
 mvals_lmfit_avr <- lmFit(mvals_avr, design = design_avr)
@@ -494,7 +557,7 @@ for(i in 1:10){
 }
 ```
 
-```{r Heatmap avr}
+```{r heatmap avr}
 hm_anno_t50_avr <- data.frame(Status = pdata_avr$Severity, row.names = rownames(pdata_avr))
 hm_col_anno_t50_avr <- data.frame(pdata_avr$Sample_ID, row.names = rownames(pdata_avr))
 
@@ -506,7 +569,13 @@ pheatmap(betas_t50_avr_dm, annotation_col = hm_anno_t50_avr, labels_col = hm_col
 dev.off()
 ```
 
-```{r Differentially methylated genes avr}
+Similar to CD vs non-CD, we find no statistically significant differences between CD-active and CD-remissive. Again, when we visualize the difference between the CD and non-CD individuals, there appear to be observable differences, which is perhaps more visible from the heatmap. 
+
+### DMGs
+
+Similar to what we have done before, we will try to find genes that are enriched for DMPs.
+
+```{r differentially methylated genes avr}
 dmgavrDir <- file.path(dmgDir, "avr")
 dir.create(dmgavrDir)
 
@@ -538,7 +607,9 @@ ACTvREM_ma_sig <- ACTvREM_ma[which(ACTvREM_ma$Brown_padj<0.05),]
 write.csv(ACTvREM_ma, file.path(dmgavrDir, "ACTvREM.csv"))
 ```
 
-```{r effect of drugs avr}
+Now that we have our genes of interest, the question is naturally whether medication affects the methylation signal of the DMGs. We can perform PCA on only these CpGs and investigate whether the CD-active patients on no medication cluster separately from the other CD-active, or even all CD patients.
+
+```{r medication effect dmgs avr}
 ACTvREM_ma_sig_cpgs <- unlist(lapply(ACTvREM_ma_sig$Gene, function(gene){
   ACTvREM$Name[grep(gene, ACTvREM$UCSC_RefGene_Name)]
 }))
@@ -571,17 +642,19 @@ avr_dmeg_svd_plot <- ggplot(mvals_avr_dmeg_svd_df, aes(x = PC1, y = PC2, col = S
        subtitle = "Probes associated to the DMGs") +
   theme(panel.grid.major = element_blank(), 
         panel.grid.minor = element_blank())
+
+ggplotly(avr_dmeg_svd_plot)
 ```
+
+The CD-active with no medication do not appear to cluster separately on either PC1 or PC2, suggesting that medication does not seem to manifest in the DMG-associated CpGs. Note that this does not say that medication has no influence on the DNA methylome - that would be a different question and would likely require a different set of samples.
+
+One of the questions I received was whether we the DMGs are random genes or whether they can actually distinguish CD-active from CD-remissive. Essentially, the question is: what is the predictive value of the DMGs? To answer this question, we can perform some classification analyses. As we have preselected the genes through a meta-analytic approach of linear regressions, we don't need to perform feature selection as we have done so previously. Nonetheless, we will likely need to include some regularization, which are a set of functions that shrink the coefficients of the covariates. Here, we will use ridge regression to ensure that correlated features (CpGs) are shrunk in a reasonably similar fashion. 
 
 ```{r classification avr}
 require(caret)
 require(glmnet)
 
 set.seed(243098)
-
-##glmnet
-#mvals_avr_glmnetcv <- cv.glmnet(x = t(mvals_avr_dmeg), y = as.numeric(pdata_avr$Severity), family = "binomial", type.measure = "mse", alpha = 0)
-#predict(mvals_avr_glmnetcv, newx = t(mvals_avr_dmeg), s = "lambda.min", type = "class")
 
 #caret
 avr_train_df <- data.frame(Severity = pdata_avr$Severity,
@@ -606,20 +679,18 @@ mvals_avr_glmnetcv_caret <- train(
   tuneGrid = expand.grid(alpha = 0, lambda = 10^seq(-3, 3, length = 100))
 )
 
-mvals_avr_glmnetcv_split <- split(mvals_avr_glmnetcv_caret$pred, mvals_avr_glmnetcv_caret$pred$Resample)
-
-mvals_avr_performance <- do.call(rbind, lapply(names(mvals_avr_glmnetcv_split), function(fold){
-  data.frame(lift(obs ~ Active, data = mvals_avr_glmnetcv_split[[fold]], class = "Active")$data, 
-             fold = fold)
-}))
-
-ggplot(mvals_avr_performance, aes(x = 1-Sp, y = Sn, col = fold)) +
-  geom_line()
-
-
+# mvals_avr_glmnetcv_split <- split(mvals_avr_glmnetcv_caret$pred, mvals_avr_glmnetcv_caret$pred$Resample)
+# 
+# mvals_avr_performance <- do.call(rbind, lapply(names(mvals_avr_glmnetcv_split), function(fold){
+#   data.frame(lift(obs ~ Active, data = mvals_avr_glmnetcv_split[[fold]], class = "Active")$data, 
+#              fold = fold)
+# }))
+# 
+# ggplot(mvals_avr_performance, aes(x = 1-Sp, y = Sn, col = fold)) +
+#   geom_line()
 ```
 
-
+We typically observe a ROC of 1, a sensitivity of 1 and a specificity of 1. While this sounds good, it did not surprise me as I had preselected the data based on its discriminative capability albeit using inferential statistics. 
 
 ```{r plotting dmgs avr}
 ACTvREM_gr <- makeGRangesFromDataFrame(ACTvREM, keep.extra.columns = T, start.field = "pos", end.field = "pos", seqnames.field = "chr")
@@ -643,20 +714,7 @@ print(dmg_plot(gene_of_interest = ACTvREM_ma_sig$Gene[11], tophits_gr = ACTvREM_
 dev.off()
 ```
 
-```{r ppi dmgs avr}
-dmgavrppiDir <- file.path(dmgavrDir, "ppi")
-
-ACTvREM_ppi <- read.csv(file.path(dmgavrppiDir, "dmg_avr_interactions.tsv"), sep = "\t")
-
-ACTvREM_ppi <- lapply(ACTvREM_ppi, function(interaction){
-  interaction %>% 
-    dplyr::rename(weight = combined_score,
-                  from = node1,
-                  to = node2) %>%
-    mutate(from = as.character(from),
-           to = as.character(to))
-})
-```
+Again, we check if the DMGs are associated with any enhancer regions. 
 
 ```{r dmg enhancers}
 dmg_ACTvREM_enhancers <-lapply(ACTvREM_ma_sig$Gene, function(dmg){
@@ -670,11 +728,14 @@ ACTvREM_ma_sig[11,]
 pchic_gr[unique(queryHits(dmg_ACTvREM_enhancers[[11]]))]
 ```
 
-```{r DMR analysis avr}
+While we find some overlap, the enhancers are only active in erythroblasts.
+
+### DMRs
+
+```{r dmr analysis avr}
 dmravrDir <- file.path(dmrDir, "avr")
 dir.create(dmravrDir)
 
-require(DMRcate)
 dmr_anno_ACTvREM <- cpg.annotate(object = as.matrix(mvals_avr),
                                  datatype = "array",
                                  arraytype = "450K",
@@ -690,11 +751,13 @@ write.csv(as.data.frame(dmr_ACTvREM_gr), file.path(dmrDir, "dmrs_ACTvREM.csv"))
 dmr_plot(dmr_gr = dmr_ACTvREM_gr[1], meth_data = betas_avr, anno_gr = gmset_anno_gr, meth_groups = pdata_avr$Severity, flanks = 0)
 ```
 
+Again, we observe some differences, but find it to be less conclusive as compared with the DMRs observed for CD vs non-CD.
+
 ## Overlap CD vs non-CD and ACT vs REM
 
-```{r dmgs}
-require(ggrepel)
+Having identified CD vs non-CD DMGs and CD-active vs CD-remissive DMGs, are there any overlap between the two?
 
+```{r overlap dmgs}
 dmg_ol <- merge(CDvNon_CD_ma, ACTvREM_ma, by = "Gene")
 colnames(dmg_ol) <- c("Gene", "Brown_pval_cvn", "Fisher_pval_cvn", "Scale_Factor_C_cvn", "DF_cvn", "Brown_padj_cvn", "Brown_pval_avr", "Fisher_pval_avr", "Scale_Factor_C_avr", "DF_avr", "Brown_padj_avr")
 
@@ -720,7 +783,11 @@ dmg_ol_plot <- ggplot(dmg_ol, aes(x = -log10(dmg_ol$Brown_pval_cvn), y = -log10(
   theme_bw() +
   theme(panel.grid.major=element_blank(),
         panel.grid.minor=element_blank())
+
+print(dmg_ol_plot)
 ```
+
+We find that there is one DMG shared by both, namely `MPIG6B`.
 
 ```{r overlapping dmgs}
 #MPIG6B (C6orf25)
@@ -748,27 +815,44 @@ mpig6b_enlarged_plot <- dmr_plot(dmr_gr = mpig6b_gr,
         legend.pos = "none",
         plot.title = element_blank(),
         plot.subtitle = element_blank())
+
+print(mpig6b_plot)
 ```
+
+Notably, the differences are opposite with MPIG6B displaying hypomethylation in CD relative to non-CD, but hypermethylation in CD-active relative to CD-remissive. Based on the actual % methylation plot, we observe that the CD-active resembles the non-CD, which is peculiar. I have no clear explanation as to why that would be the case and validations would necessarily be necessary to validate the observations.
+
+## Genes of interest
+
+For some future projects, two genes are of interest to our research group: `GPR146` and `SP140`.
 
 ```{r GPR146}
 gpr146_gr <- makeGRangesFromDataFrame(ACTvREM[grep("GPR146", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
 
 gpr146_gr[start(gpr146_gr) > 1096000 & start(gpr146_gr) < 1096750,]
 
-gpr146_plot <- dmcomp_plot(gene_of_interest = "GPR146",
-                           anno_gr = gmset_anno_gr,
-                           tophits1 = CDvNon_CD,
-                           tophits2 = ACTvREM,
-                           comparison1_name = "CD vs non-CD",
-                           comparison2_name = "CD-active vs CD-remissive",
-                           meth_data = betas_filtered,
-                           meth_groups = pdata_filtered$Severity,
-                           ylim = NULL,
-                           smooth_m = F)
+# gpr146_plot <- dmcomp_plot(gene_of_interest = "GPR146",
+#                            anno_gr = gmset_anno_gr,
+#                            tophits1 = CDvNon_CD,
+#                            tophits2 = ACTvREM,
+#                            comparison1_name = "CD vs non-CD",
+#                            comparison2_name = "CD-active vs CD-remissive",
+#                            meth_data = betas_filtered,
+#                            meth_groups = pdata_filtered$Severity,
+#                            ylim = NULL,
+#                            smooth_m = F)
 
-Cairo(width = 1500, height = 1500, type = "pdf", file = "GPR146_monocytes.pdf", bg = "white", units = "px", dpi = 120)
-print(gpr146_plot)
-dev.off()
+gpr146_plot <- dmg_plot(gene_of_interest = "GPR146", 
+                        tophits_gr = ACTvREM_gr, 
+                        smooth = T, 
+                        stat = "identity",
+                        significance = F)
+
+gpr146_enlarged_plot <- dmr_plot(dmr_gr = gpr146_gr, 
+                                 meth_data = betas_filtered, 
+                                 anno_gr = gmset_anno_gr, 
+                                 meth_groups = pdata_filtered$Severity, 
+                                 flanks = 0, 
+                                 rug = F)
 
 Cairo(width = 600, height = 600, type = "pdf", file = "GPR146_cg20603222_monocytes.pdf", bg = "white", units = "px", dpi = 120)
 cpg_strip_plot(cpg_num = "cg20603222", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
@@ -779,25 +863,36 @@ cpg_strip_plot(cpg_num = "cg26224354", betas = betas_filtered, factor_interest =
 dev.off()
 ```
 
+While we appear to observe some strange trend, I feel we are looking into the noise as the difference in methylation is less than a 3 percent.
+
 ```{r SP140}
 sp140_gr <- makeGRangesFromDataFrame(ACTvREM[grep("SP140", ACTvREM$UCSC_RefGene_Name),], keep.extra.columns = T, seqnames.field = "chr", start.field = "pos", end.field = "pos")
 
-sp140_gr <- sp140_gr[start(sp140_gr) >= 231090500,]
+#sp140_gr <- sp140_gr[start(sp140_gr) >= 231090500,]
 
-sp140_plot <- dmcomp_plot(gene_of_interest = "SP140",
-                           anno_gr = sp140_gr,
-                           tophits1 = CDvNon_CD,
-                           tophits2 = ACTvREM,
-                           comparison1_name = "CD vs non-CD",
-                           comparison2_name = "CD-active vs CD-remissive",
-                           meth_data = betas_filtered,
-                           meth_groups = pdata_filtered$Severity,
-                           ylim = NULL,
-                           smooth_m = F)
+# sp140_plot <- dmcomp_plot(gene_of_interest = "SP140",
+#                            anno_gr = sp140_gr,
+#                            tophits1 = CDvNon_CD,
+#                            tophits2 = ACTvREM,
+#                            comparison1_name = "CD vs non-CD",
+#                            comparison2_name = "CD-active vs CD-remissive",
+#                            meth_data = betas_filtered,
+#                            meth_groups = pdata_filtered$Severity,
+#                            ylim = NULL,
+#                            smooth_m = F)
 
-Cairo(width = 1500, height = 1500, type = "pdf", file = "SP140_monocytes.pdf", bg = "white", units = "px", dpi = 120)
-print(sp140_plot)
-dev.off()
+sp140_plot <- dmg_plot(gene_of_interest = "SP140", 
+                        tophits_gr = ACTvREM_gr, 
+                        smooth = T, 
+                        stat = "identity",
+                        significance = F)
+
+sp140_enlarged_plot <- dmr_plot(dmr_gr = sp140_gr, 
+                                 meth_data = betas_filtered, 
+                                 anno_gr = gmset_anno_gr, 
+                                 meth_groups = pdata_filtered$Severity, 
+                                 flanks = 0, 
+                                 rug = F)
 
 Cairo(width = 600, height = 600, type = "pdf", file = "SP140_cg03887528_monocytes.pdf", bg = "white", units = "px", dpi = 120)
 cpg_strip_plot(cpg_num = "cg03887528", betas = betas_filtered, factor_interest = pdata_filtered$Severity, enlarged = F, type = "SE", legend = F)
@@ -812,14 +907,18 @@ cpg_strip_plot(cpg_num = "cg04579254", betas = betas_filtered, factor_interest =
 dev.off()
 ```
 
-# Public data
+For SP140, we hardly see any difference
+
+## Public data
+
+As DNA methylation is a feature specific to a particular cell-type and CD14+ monocytes consist of different subpopulations (classical, non-classical and intermediate), it stands to reason that the observed differences in methylation could be the result of changes in the underlying monocyte populations. While this would require a different experiment to properly investigate this, we can approximate an answer by investigating by comparing our data with methylation data on the monocyte subsets as published by [Zawada et al. 2016](https://www.ncbi.nlm.nih.gov/pubmed/27018948).
 
 ```{r setup public data}
 publicDir <- file.path(outputDir, "public")
 dir.create(publicDir)
 ```
 
-## Methyl-Seq: GSE73788
+### Methyl-Seq: GSE73788
 
 ```{r setup methylseq}
 mseqDir <- file.path(publicDir, "methylseq")
@@ -862,7 +961,126 @@ for(i in 41:length(dmgs_sig)){
 }
 ```
 
-# Primers DMR
+In general it appears as though `Mo1` has more methylation than `Mo2` or `Mo3`. Overlaying the methylation by Zawada  onto the DNA methylation data at hand seems to corroborate the broad trends, but lacks the granularity. 
+
+The lack in overlap appears to be caused by two issues in particular:
+* The difference in technology: Zawada et al. used HpaII to identify unmethylated CpGs and did not use a MspI to measure all CG regions, making the inference on percentage methylation difficult.
+* The lack of biological replicates. Zawada et al. describe the pooling of monocytes from 7 donors and sequencing them in one go. Based on the available data, the samples were not indexed and hence the observed signal is at it stands.
+
+# Tables
+
+```{r sample information}
+require(dplyr)
+
+#Age
+pdata_filtered %>% 
+  data.frame() %>%
+  select(Age, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(Age), stdev = sd(Age))
+
+#CRP
+pdata_filtered %>% 
+  data.frame() %>%
+  select(CRP, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(CRP, na.rm = T), stdev = sd(CRP, na.rm = T))
+
+#HBI
+pdata_filtered %>% 
+  data.frame() %>%
+  select(HBI, Severity) %>%
+  group_by(Severity) %>%
+  summarize(mean = mean(HBI, na.rm = T), stdev = sd(HBI, na.rm = T))
+
+#Medication
+pdata_filtered %>% 
+  data.frame() %>%
+  select(Medication, Severity) %>%
+  group_by(Severity) %>%
+  table()
+
+#anti-TNF
+pdata_filtered %>% 
+  data.frame() %>%
+  select(aTNF, Severity) %>%
+  group_by(Severity) %>%
+  table()
+
+#Corticosteroid
+pdata_filtered %>% 
+  data.frame() %>%
+  select(Corticosteroid, Severity) %>%
+  group_by(Severity) %>%
+  table()
+
+#Thiopurine
+pdata_filtered %>% 
+  data.frame() %>%
+  select(Thiopurine, Severity) %>%
+  group_by(Severity) %>%
+  table()
+```
+
+## Future research
+
+It might make sense to perform a well-powered analysis of some of the interesting features we highlighted in this study. For example, the CD vs non-CD DMR could be validated through targeted bisulfite sequencing. On the question of sample size, we could perform a post-hoc power calculation. Note that post-hoc power calculations are not necessarily useful given the fact that statistical power is positively correlated with p-values, see this [blog](http://daniellakens.blogspot.com/2014/12/observed-power-and-what-to-do-if-your.html).
+
+```{r dmr cvn power calculation}
+powerDir <- file.path(outputDir, "power_analysis")
+dir.create(powerDir)
+
+library(pwr)
+
+cohend <- function(m1, m2, s1, s2){
+  (m1 - m2)/sqrt(((s1^2) + (s2^2))/2) 
+} 
+
+dmr_cpgs <- names(subsetByOverlaps(gmset_anno_gr, dmr_CDvNon_CD_gr[1]))
+CDvNon_CD[dmr_cpgs,]
+dmr_betas <- melt(cbind(betas_filtered[dmr_cpgs,], dmr_cpgs))
+dmr_betas$Status <- pdata_filtered[dmr_betas$variable, "Status1"]
+colnames(dmr_betas) <- c("CpG", "ID", "Beta", "Status")
+
+dmr_summarized <- dmr_betas %>% 
+  group_by(Status, CpG) %>%
+  summarise(
+    mu = mean(Beta),
+    sdev = sd(Beta)
+  ) %>% 
+  arrange(CpG)
+  #summarise_all(funs(trimws(paste(., collapse = ''))))
+
+dmr_summarized <- split(dmr_summarized, dmr_summarized$Status)
+dmr_summarized <- merge(dmr_summarized$CD, dmr_summarized$Non_CD, by = "CpG")
+rownames(dmr_summarized) <- dmr_summarized$CpG
+
+dmr_summarized$N <- do.call(c, lapply(rownames(dmr_summarized), function(cpg){
+  cohd <- cohend(m1 = dmr_summarized[cpg, "mu.x"], m2 = dmr_summarized[cpg, "mu.y"], s1 = dmr_summarized[cpg, "sdev.x"], s2 = dmr_summarized[cpg, "sdev.y"])
+  pwr.t.test(
+    n = NULL,                  # Observations in _each_ group
+    d = cohd,           
+    sig.level = 0.001,          # Type I probability
+    power = 0.80,              # 1 minus Type II probability
+    type = "two.sample",       # Change for one- or two-sample
+    alternative = "two.sided"
+  )$n
+}))
+
+pwr.t.test(
+  n = NULL,                  # Observations in _each_ group
+  d = 2.456725,           
+  sig.level = 0.001,          # Type I probability
+  power = 0.80,              # 1 minus Type II probability
+  type = "two.sample",       # Change for one- or two-sample
+  alternative = "two.sided"
+)
+
+dmr_summarized <- dmr_summarized[dmr_cpgs,]
+write.csv(dmr_summarized, file.path(powerDir, "power_dmr_cpgs.csv"))
+```
+
+For the actual experiments, we could use primers designed using the following primers.
 
 ```{r primer}
 fig1propDir <- file.path(proposalDir, "fig1")
@@ -870,7 +1088,6 @@ dir.create(fig1propDir)
 
 tab1propDir <- file.path(proposalDir, "table1")
 dir.create(tab1propDir)
-
 
 require(GenomicRanges)
 amplicons <- data.frame(chr = rep("chr7", 9), 
@@ -934,68 +1151,6 @@ dev.off()
 Cairo(width = 1200, height = 1600, type = "pdf", file = file.path(fig1propDir, "fig1.pdf"), bg = "white", units = "px", dpi = 120)
 print(ggarrange(dmr1, amps, ncol = 1, nrow = 2, align = "v"))
 dev.off()
-```
-
-```{r MethPrimer}
-library(RCurl)
-library(htmltidy)
-
-methprimer <- readHTMLTable("/home/ayliyim/archive/projects/PRJ0000002_CDMON/data/primers/methprimer_dmr.html")
-```
-
-# Tables
-
-```{r sample information}
-require(dplyr)
-
-#Age
-pdata_filtered %>% 
-  data.frame() %>%
-  select(Age, Severity) %>%
-  group_by(Severity) %>%
-  summarize(mean = mean(Age), stdev = sd(Age))
-
-#CRP
-pdata_filtered %>% 
-  data.frame() %>%
-  select(CRP, Severity) %>%
-  group_by(Severity) %>%
-  summarize(mean = mean(CRP, na.rm = T), stdev = sd(CRP, na.rm = T))
-
-#HBI
-pdata_filtered %>% 
-  data.frame() %>%
-  select(HBI, Severity) %>%
-  group_by(Severity) %>%
-  summarize(mean = mean(HBI, na.rm = T), stdev = sd(HBI, na.rm = T))
-
-#Medication
-pdata_filtered %>% 
-  data.frame() %>%
-  select(Medication, Severity) %>%
-  group_by(Severity) %>%
-  table()
-
-#anti-TNF
-pdata_filtered %>% 
-  data.frame() %>%
-  select(aTNF, Severity) %>%
-  group_by(Severity) %>%
-  table()
-
-#Corticosteroid
-pdata_filtered %>% 
-  data.frame() %>%
-  select(Corticosteroid, Severity) %>%
-  group_by(Severity) %>%
-  table()
-
-#Thiopurine
-pdata_filtered %>% 
-  data.frame() %>%
-  select(Thiopurine, Severity) %>%
-  group_by(Severity) %>%
-  table()
 ```
 
 # Figures
